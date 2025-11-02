@@ -15,12 +15,17 @@ import (
 
 // Config holds application configuration
 type Config struct {
-	DatabaseURL      string
-	BlueskyHandle    string
-	BlueskyPassword  string
-	PollingInterval  time.Duration
-	MaxConcurrent    int
-	RateLimitMS      int
+	DatabaseURL           string
+	BlueskyHandle         string
+	BlueskyPassword       string
+	PollingInterval       time.Duration
+	PostsPerPage          int
+	MaxConcurrent         int
+	RateLimitMS           int
+	InitialLookbackHours  int
+	MaxRetries            int
+	RetryBackoffMS        int
+	MaxPagesPerUser       int
 }
 
 // Poller handles the polling of Bluesky feeds
@@ -114,12 +119,17 @@ func loadConfig() (*Config, error) {
 	log.Printf("Database URL: %s", dbURL)
 
 	return &Config{
-		DatabaseURL:      dbURL,
-		BlueskyHandle:    viper.GetString("bluesky.handle"),
-		BlueskyPassword:  viper.GetString("bluesky.password"),
-		PollingInterval:  time.Duration(viper.GetInt("polling.interval_minutes")) * time.Minute,
-		MaxConcurrent:    viper.GetInt("polling.max_concurrent"),
-		RateLimitMS:      viper.GetInt("polling.rate_limit_ms"),
+		DatabaseURL:          dbURL,
+		BlueskyHandle:        viper.GetString("bluesky.handle"),
+		BlueskyPassword:      viper.GetString("bluesky.password"),
+		PollingInterval:      time.Duration(viper.GetInt("polling.interval_minutes")) * time.Minute,
+		PostsPerPage:         viper.GetInt("polling.posts_per_page"),
+		MaxConcurrent:        viper.GetInt("polling.max_concurrent"),
+		RateLimitMS:          viper.GetInt("polling.rate_limit_ms"),
+		InitialLookbackHours: viper.GetInt("polling.initial_lookback_hours"),
+		MaxRetries:           viper.GetInt("polling.max_retries"),
+		RetryBackoffMS:       viper.GetInt("polling.retry_backoff_ms"),
+		MaxPagesPerUser:      viper.GetInt("polling.max_pages_per_user"),
 	}, nil
 }
 
@@ -165,40 +175,171 @@ func (p *Poller) Poll() {
 
 // pollAccount fetches posts from a single account
 func (p *Poller) pollAccount(handle string) {
-	// Get last cursor
+	// Check if initial ingestion needed
 	cursor, err := p.db.GetLastCursor(handle)
 	if err != nil {
-		log.Printf("Error getting cursor for %s: %v", handle, err)
+		log.Printf("[ERROR] %s: Failed to get cursor: %v", handle, err)
 		return
 	}
 
-	// Fetch posts
-	feed, err := p.bskyClient.GetAuthorFeed(handle, cursor, 50)
-	if err != nil {
-		log.Printf("Error fetching feed for %s: %v", handle, err)
-		return
-	}
-
-	if len(feed.Feed) == 0 {
-		return
-	}
-
-	log.Printf("Processing %d posts from %s", len(feed.Feed), handle)
-
-	for _, item := range feed.Feed {
-		p.processPost(&item.Post)
-	}
-
-	// Update cursor
-	if feed.Cursor != "" {
-		if err := p.db.UpdateCursor(handle, feed.Cursor); err != nil {
-			log.Printf("Error updating cursor for %s: %v", handle, err)
+	if cursor == "" {
+		// Initial ingestion
+		if err := p.pollAccountInitial(handle); err != nil {
+			log.Printf("[ERROR] %s: Initial ingestion failed: %v", handle, err)
+		}
+	} else {
+		// Regular polling with gap detection
+		if err := p.pollAccountRegular(handle, cursor); err != nil {
+			log.Printf("[ERROR] %s: Regular poll failed: %v", handle, err)
 		}
 	}
 }
 
-// processPost extracts URLs and stores the post
-func (p *Poller) processPost(post *bluesky.Post) {
+// pollAccountInitial performs initial 24-hour ingestion for a user
+func (p *Poller) pollAccountInitial(handle string) error {
+	lookbackPeriod := time.Duration(p.config.InitialLookbackHours) * time.Hour
+	cutoffTime := time.Now().Add(-lookbackPeriod)
+
+	log.Printf("[INITIAL] %s: Fetching last %d hours of posts", handle, p.config.InitialLookbackHours)
+
+	cursor := ""
+	totalPosts := 0
+	totalURLs := 0
+	pageCount := 0
+
+	for pageCount < p.config.MaxPagesPerUser {
+		pageCount++
+
+		// Fetch with retry logic
+		feed, err := p.fetchWithRetry(handle, cursor, p.config.PostsPerPage)
+		if err != nil {
+			log.Printf("[INITIAL] %s: Failed after retries on page %d: %v", handle, pageCount, err)
+			return err
+		}
+
+		if len(feed.Feed) == 0 {
+			log.Printf("[INITIAL] %s: No more posts (reached end)", handle)
+			break
+		}
+
+		// Process posts
+		urlsInBatch := 0
+		for _, item := range feed.Feed {
+			urlsInBatch += p.processPost(&item.Post)
+		}
+		totalPosts += len(feed.Feed)
+		totalURLs += urlsInBatch
+
+		// Check oldest post
+		oldestPost := feed.Feed[len(feed.Feed)-1]
+		if oldestPost.Post.Record.CreatedAt.Before(cutoffTime) {
+			log.Printf("[INITIAL] %s: Reached %d hour cutoff at page %d", handle, p.config.InitialLookbackHours, pageCount)
+			break
+		}
+
+		if feed.Cursor == "" {
+			break
+		}
+
+		cursor = feed.Cursor
+
+		// Rate limiting
+		time.Sleep(time.Duration(p.config.RateLimitMS) * time.Millisecond)
+	}
+
+	// Save cursor for future polls
+	if err := p.db.UpdateCursor(handle, cursor); err != nil {
+		return err
+	}
+
+	log.Printf("[INITIAL] %s: Complete - %d posts, %d URLs (%d pages)", handle, totalPosts, totalURLs, pageCount)
+	return nil
+}
+
+// pollAccountRegular performs regular polling with gap detection
+func (p *Poller) pollAccountRegular(handle string, lastCursor string) error {
+	pollingWindow := p.config.PollingInterval
+	cutoffTime := time.Now().Add(-pollingWindow)
+
+	cursor := lastCursor
+	totalPosts := 0
+	totalURLs := 0
+	pageCount := 0
+
+	for pageCount < 10 { // Reasonable limit for regular polling
+		pageCount++
+
+		feed, err := p.fetchWithRetry(handle, cursor, p.config.PostsPerPage)
+		if err != nil {
+			log.Printf("[POLL] %s: Error on page %d: %v", handle, pageCount, err)
+			return err
+		}
+
+		if len(feed.Feed) == 0 {
+			break
+		}
+
+		urlsInBatch := 0
+		for _, item := range feed.Feed {
+			urlsInBatch += p.processPost(&item.Post)
+		}
+		totalPosts += len(feed.Feed)
+		totalURLs += urlsInBatch
+
+		// Gap detection
+		oldestPost := feed.Feed[len(feed.Feed)-1]
+		if oldestPost.Post.Record.CreatedAt.Before(cutoffTime) {
+			// Covered the polling window
+			break
+		}
+
+		if feed.Cursor == "" {
+			break
+		}
+
+		// Gap detected - log and continue
+		if pageCount == 1 {
+			log.Printf("[POLL] %s: High volume detected, fetching more pages", handle)
+		}
+
+		cursor = feed.Cursor
+		time.Sleep(time.Duration(p.config.RateLimitMS) * time.Millisecond)
+	}
+
+	if pageCount > 1 {
+		log.Printf("[POLL] %s: %d posts, %d URLs across %d pages", handle, totalPosts, totalURLs, pageCount)
+	}
+
+	// Update cursor
+	return p.db.UpdateCursor(handle, cursor)
+}
+
+// fetchWithRetry fetches a feed with exponential backoff retry logic
+func (p *Poller) fetchWithRetry(handle, cursor string, limit int) (*bluesky.FeedResponse, error) {
+	var feed *bluesky.FeedResponse
+	var err error
+
+	backoff := time.Duration(p.config.RetryBackoffMS) * time.Millisecond
+
+	for attempt := 0; attempt <= p.config.MaxRetries; attempt++ {
+		feed, err = p.bskyClient.GetAuthorFeed(handle, cursor, limit)
+
+		if err == nil {
+			return feed, nil
+		}
+
+		if attempt < p.config.MaxRetries {
+			delay := backoff * time.Duration(1<<attempt) // Exponential: 1s, 2s, 4s
+			log.Printf("[RETRY] %s: Attempt %d failed, retrying in %v: %v", handle, attempt+1, delay, err)
+			time.Sleep(delay)
+		}
+	}
+
+	return nil, fmt.Errorf("failed after %d retries: %w", p.config.MaxRetries, err)
+}
+
+// processPost extracts URLs and stores the post, returns number of URLs found
+func (p *Poller) processPost(post *bluesky.Post) int {
 	// Insert post
 	dbPost := &database.Post{
 		ID:           post.URI,
@@ -209,11 +350,26 @@ func (p *Poller) processPost(post *bluesky.Post) {
 
 	if err := p.db.InsertPost(dbPost); err != nil {
 		log.Printf("Error inserting post %s: %v", post.URI, err)
-		return
+		return 0
 	}
+
+	urlCount := 0
 
 	// Extract URLs from post text
 	urls := urlutil.ExtractURLs(post.Record.Text)
+	urlCount += p.processURLs(post.URI, urls)
+
+	// Extract URLs from embeds (quote posts, external links)
+	if post.Embed != nil {
+		urlCount += p.processEmbed(post.URI, post.Embed)
+	}
+
+	return urlCount
+}
+
+// processURLs processes a list of URLs and links them to a post
+func (p *Poller) processURLs(postURI string, urls []string) int {
+	urlCount := 0
 
 	for _, rawURL := range urls {
 		// Normalize URL
@@ -231,16 +387,47 @@ func (p *Poller) processPost(post *bluesky.Post) {
 		}
 
 		// Link post to link
-		if err := p.db.LinkPostToLink(post.URI, link.ID); err != nil {
+		if err := p.db.LinkPostToLink(postURI, link.ID); err != nil {
 			log.Printf("Error linking post to link: %v", err)
 			continue
 		}
+
+		urlCount++
 
 		// Fetch OG data if not already fetched
 		if link.Title == nil {
 			go p.fetchOGDataAsync(link.ID, normalizedURL)
 		}
 	}
+
+	return urlCount
+}
+
+// processEmbed extracts URLs from embeds (quote posts, external links, etc.)
+func (p *Poller) processEmbed(postURI string, embed *bluesky.Embed) int {
+	urlCount := 0
+
+	// Handle external link embeds
+	if embed.External != nil {
+		urls := []string{embed.External.URI}
+		urlCount += p.processURLs(postURI, urls)
+	}
+
+	// Handle quote posts (embedded records)
+	if embed.Record != nil && embed.Record.Record != nil {
+		quotedPost := embed.Record.Record
+
+		// Extract URLs from quoted post text
+		urls := urlutil.ExtractURLs(quotedPost.Record.Text)
+		urlCount += p.processURLs(postURI, urls)
+
+		// Recursively process embeds in the quoted post
+		if quotedPost.Embed != nil {
+			urlCount += p.processEmbed(postURI, quotedPost.Embed)
+		}
+	}
+
+	return urlCount
 }
 
 // fetchOGDataAsync fetches OpenGraph data in the background

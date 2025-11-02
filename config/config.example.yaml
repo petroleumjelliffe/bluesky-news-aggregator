@@ -16,8 +16,15 @@ server:
 
 polling:
   interval_minutes: 15
-  max_concurrent: 10
-  rate_limit_ms: 100
+  posts_per_page: 50          # Posts to fetch per API call
+  max_concurrent: 10          # Concurrent user fetches
+  rate_limit_ms: 100          # Delay between API calls
+
+  # Initial ingestion settings
+  initial_lookback_hours: 24  # How far back to fetch on first run
+  max_retries: 3              # Retry failed requests
+  retry_backoff_ms: 1000      # Initial retry delay (exponential)
+  max_pages_per_user: 100     # Safety limit to prevent runaway fetches
 
 aggregation:
   default_hours: 24
