@@ -1,7 +1,7 @@
 package aggregator
 
 import (
-	"github.com/yourusername/bluesky-news-aggregator/internal/database"
+	"github.com/petroleumjelliffe/bluesky-news-aggregator/internal/database"
 )
 
 // RankingStrategy defines how links should be ranked

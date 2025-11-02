@@ -22,16 +22,29 @@ func main() {
 		log.Fatalf("Failed to load config: %v", err)
 	}
 
-	// Build connection string
-	dbURL := fmt.Sprintf(
-		"host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
-		viper.GetString("database.host"),
-		viper.GetInt("database.port"),
-		viper.GetString("database.user"),
-		viper.GetString("database.password"),
-		viper.GetString("database.dbname"),
-		viper.GetString("database.sslmode"),
-	)
+	// Build connection string, handling empty password
+	password := viper.GetString("database.password")
+	var dbURL string
+	if password == "" {
+		dbURL = fmt.Sprintf(
+			"host=%s port=%d user=%s dbname=%s sslmode=%s",
+			viper.GetString("database.host"),
+			viper.GetInt("database.port"),
+			viper.GetString("database.user"),
+			viper.GetString("database.dbname"),
+			viper.GetString("database.sslmode"),
+		)
+	} else {
+		dbURL = fmt.Sprintf(
+			"host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
+			viper.GetString("database.host"),
+			viper.GetInt("database.port"),
+			viper.GetString("database.user"),
+			password,
+			viper.GetString("database.dbname"),
+			viper.GetString("database.sslmode"),
+		)
+	}
 
 	// Connect to database
 	db, err := sql.Open("postgres", dbURL)

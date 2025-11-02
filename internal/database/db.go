@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/jmoiron/sqlx"
-	_ "github.com/lib/pq"
+	"github.com/lib/pq"
 )
 
 // DB wraps the database connection
@@ -43,15 +43,15 @@ type PostLink struct {
 
 // TrendingLink represents an aggregated link with share count
 type TrendingLink struct {
-	ID            int       `db:"id"`
-	NormalizedURL string    `db:"normalized_url"`
-	OriginalURL   string    `db:"original_url"`
-	Title         *string   `db:"title"`
-	Description   *string   `db:"description"`
-	OGImageURL    *string   `db:"og_image_url"`
-	ShareCount    int       `db:"share_count"`
-	LastSharedAt  time.Time `db:"last_shared_at"`
-	Sharers       []string  `db:"sharers"`
+	ID            int            `db:"id"`
+	NormalizedURL string         `db:"normalized_url"`
+	OriginalURL   string         `db:"original_url"`
+	Title         *string        `db:"title"`
+	Description   *string        `db:"description"`
+	OGImageURL    *string        `db:"og_image_url"`
+	ShareCount    int            `db:"share_count"`
+	LastSharedAt  time.Time      `db:"last_shared_at"`
+	Sharers       pq.StringArray `db:"sharers"`
 }
 
 // NewDB creates a new database connection

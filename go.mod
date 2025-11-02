@@ -1,4 +1,4 @@
-module github.com/yourusername/bluesky-news-aggregator
+module github.com/petroleumjelliffe/bluesky-news-aggregator
 
 go 1.21
 
