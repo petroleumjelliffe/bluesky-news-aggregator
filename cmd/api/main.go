@@ -150,13 +150,13 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
                 data.links.forEach(link => {
                     const card = document.createElement('div');
                     card.className = 'link-card';
-                    card.innerHTML = \`
-                        \${link.image_url ? \`<img src="\${link.image_url}" alt=""\>\` : ''}
-                        <h3><a href="\${link.url}" target="_blank">\${link.title || link.url}</a></h3>
-                        <p>\${link.description || ''}</p>
-                        <div class="share-count">Shared by \${link.share_count} account(s)</div>
-                        <div class="sharers">\${link.sharers.slice(0, 5).join(', ')}\${link.sharers.length > 5 ? '...' : ''}</div>
-                    \`;
+                    card.innerHTML = ` + "`" + `
+                        ${link.image_url ? ` + "`" + `<img src="${link.image_url}" alt="">` + "`" + ` : ''}
+                        <h3><a href="${link.url}" target="_blank">${link.title || link.url}</a></h3>
+                        <p>${link.description || ''}</p>
+                        <div class="share-count">Shared by ${link.share_count} account(s)</div>
+                        <div class="sharers">${link.sharers.slice(0, 5).join(', ')}${link.sharers.length > 5 ? '...' : ''}</div>
+                    ` + "`" + `;
                     container.appendChild(card);
                 });
             });
