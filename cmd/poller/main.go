@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -185,12 +186,20 @@ func (p *Poller) pollAccount(handle string) {
 	if cursor == "" {
 		// Initial ingestion
 		if err := p.pollAccountInitial(handle); err != nil {
-			log.Printf("[ERROR] %s: Initial ingestion failed: %v", handle, err)
+			if isPermanentError(err) {
+				log.Printf("[SKIP] %s: Account unavailable (invalid/deleted/private): %v", handle, err)
+			} else {
+				log.Printf("[ERROR] %s: Initial ingestion failed: %v", handle, err)
+			}
 		}
 	} else {
 		// Regular polling with gap detection
 		if err := p.pollAccountRegular(handle, cursor); err != nil {
-			log.Printf("[ERROR] %s: Regular poll failed: %v", handle, err)
+			if isPermanentError(err) {
+				log.Printf("[SKIP] %s: Account unavailable (invalid/deleted/private): %v", handle, err)
+			} else {
+				log.Printf("[ERROR] %s: Regular poll failed: %v", handle, err)
+			}
 		}
 	}
 }
@@ -328,6 +337,11 @@ func (p *Poller) fetchWithRetry(handle, cursor string, limit int) (*bluesky.Feed
 			return feed, nil
 		}
 
+		// Don't retry permanent errors (400, 401, 403, 404, 410)
+		if isPermanentError(err) {
+			return nil, err
+		}
+
 		if attempt < p.config.MaxRetries {
 			delay := backoff * time.Duration(1<<attempt) // Exponential: 1s, 2s, 4s
 			log.Printf("[RETRY] %s: Attempt %d failed, retrying in %v: %v", handle, attempt+1, delay, err)
@@ -336,6 +350,21 @@ func (p *Poller) fetchWithRetry(handle, cursor string, limit int) (*bluesky.Feed
 	}
 
 	return nil, fmt.Errorf("failed after %d retries: %w", p.config.MaxRetries, err)
+}
+
+// isPermanentError checks if an API error is permanent and shouldn't be retried
+func isPermanentError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	errStr := err.Error()
+	// Check for HTTP status codes that indicate permanent failures
+	return strings.Contains(errStr, "API error: 400") || // Bad Request (invalid handle)
+		strings.Contains(errStr, "API error: 401") ||    // Unauthorized
+		strings.Contains(errStr, "API error: 403") ||    // Forbidden
+		strings.Contains(errStr, "API error: 404") ||    // Not Found
+		strings.Contains(errStr, "API error: 410")       // Gone
 }
 
 // processPost extracts URLs and stores the post, returns number of URLs found
