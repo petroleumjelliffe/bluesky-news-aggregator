@@ -409,8 +409,20 @@ func (p *Poller) processEmbed(postURI string, embed *bluesky.Embed) int {
 
 	// Handle external link embeds
 	if embed.External != nil {
-		urls := []string{embed.External.URI}
-		urlCount += p.processURLs(postURI, urls)
+		// Use Bluesky's pre-fetched metadata if available
+		if embed.External.Title != "" {
+			urlCount += p.processExternalWithMetadata(
+				postURI,
+				embed.External.URI,
+				embed.External.Title,
+				embed.External.Description,
+				embed.External.Thumb,
+			)
+		} else {
+			// Fallback: scrape if Bluesky didn't fetch metadata
+			urls := []string{embed.External.URI}
+			urlCount += p.processURLs(postURI, urls)
+		}
 	}
 
 	// Handle quote posts (embedded records)
@@ -428,6 +440,38 @@ func (p *Poller) processEmbed(postURI string, embed *bluesky.Embed) int {
 	}
 
 	return urlCount
+}
+
+// processExternalWithMetadata processes an external link with pre-fetched metadata from Bluesky
+func (p *Poller) processExternalWithMetadata(postURI, rawURL, title, description, imageURL string) int {
+	// Normalize URL
+	normalizedURL, err := urlutil.Normalize(rawURL)
+	if err != nil {
+		log.Printf("Error normalizing URL %s: %v", rawURL, err)
+		return 0
+	}
+
+	// Get or create link
+	link, err := p.db.GetOrCreateLink(rawURL, normalizedURL)
+	if err != nil {
+		log.Printf("Error with link %s: %v", rawURL, err)
+		return 0
+	}
+
+	// Link post to link
+	if err := p.db.LinkPostToLink(postURI, link.ID); err != nil {
+		log.Printf("Error linking post to link: %v", err)
+		return 0
+	}
+
+	// Store Bluesky's metadata if we don't have any yet
+	if link.Title == nil {
+		if err := p.db.UpdateLinkMetadata(link.ID, title, description, imageURL); err != nil {
+			log.Printf("Error updating link metadata: %v", err)
+		}
+	}
+
+	return 1
 }
 
 // fetchOGDataAsync fetches OpenGraph data in the background
