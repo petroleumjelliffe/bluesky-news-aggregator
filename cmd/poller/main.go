@@ -239,6 +239,12 @@ func (p *Poller) pollAccountInitial(handle string) error {
 		totalPosts += len(feed.Feed)
 		totalURLs += urlsInBatch
 
+		// Update cursor before checking if we should stop
+		// This ensures we save the current position even if we break
+		if feed.Cursor != "" {
+			cursor = feed.Cursor
+		}
+
 		// Check oldest post
 		oldestPost := feed.Feed[len(feed.Feed)-1]
 		if oldestPost.Post.Record.CreatedAt.Before(cutoffTime) {
@@ -249,8 +255,6 @@ func (p *Poller) pollAccountInitial(handle string) error {
 		if feed.Cursor == "" {
 			break
 		}
-
-		cursor = feed.Cursor
 
 		// Rate limiting
 		time.Sleep(time.Duration(p.config.RateLimitMS) * time.Millisecond)
