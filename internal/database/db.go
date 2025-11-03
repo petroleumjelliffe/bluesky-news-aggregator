@@ -226,3 +226,44 @@ func (db *DB) UpdateFollowLastSeen(did string) error {
 	_, err := db.Exec(query, did)
 	return err
 }
+
+// MarkBackfillCompleted marks a follow as having completed backfill
+func (db *DB) MarkBackfillCompleted(did string) error {
+	query := `UPDATE follows SET backfill_completed = TRUE WHERE did = $1`
+	_, err := db.Exec(query, did)
+	return err
+}
+
+// GetJetstreamCursor retrieves the last cursor for Jetstream
+func (db *DB) GetJetstreamCursor() (*int64, error) {
+	var cursor sql.NullInt64
+	query := `SELECT cursor_time_us FROM jetstream_state WHERE id = 1`
+	err := db.Get(&cursor, query)
+
+	if err == sql.ErrNoRows {
+		return nil, nil // No cursor yet
+	}
+
+	if err != nil {
+		return nil, err
+	}
+
+	if !cursor.Valid {
+		return nil, nil
+	}
+
+	val := cursor.Int64
+	return &val, nil
+}
+
+// UpdateJetstreamCursor updates the cursor for Jetstream
+func (db *DB) UpdateJetstreamCursor(cursorTimeUS int64) error {
+	query := `
+		INSERT INTO jetstream_state (id, cursor_time_us, last_updated)
+		VALUES (1, $1, NOW())
+		ON CONFLICT (id)
+		DO UPDATE SET cursor_time_us = $1, last_updated = NOW()
+	`
+	_, err := db.Exec(query, cursorTimeUS)
+	return err
+}

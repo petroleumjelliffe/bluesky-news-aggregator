@@ -65,6 +65,18 @@ func main() {
 
 	log.Printf("[INFO] Filtering to %d followed DIDs", didManager.Count())
 
+	// Load last cursor for crash recovery
+	lastCursor, err := db.GetJetstreamCursor()
+	if err != nil {
+		log.Fatalf("Failed to get last cursor: %v", err)
+	}
+
+	if lastCursor != nil {
+		log.Printf("[INFO] Resuming from cursor: %d", *lastCursor)
+	} else {
+		log.Printf("[INFO] Starting from current time (no previous cursor)")
+	}
+
 	// Create processor for handling events
 	proc := processor.NewProcessor(db)
 
@@ -85,6 +97,12 @@ func main() {
 				}
 			}
 		}
+
+		// Update cursor periodically (every event for now, could batch)
+		if err := db.UpdateJetstreamCursor(event.TimeUS); err != nil {
+			log.Printf("[WARN] Failed to update cursor: %v", err)
+		}
+
 		return nil
 	}
 
@@ -129,8 +147,8 @@ func main() {
 		}
 	}()
 
-	// Connect and read events
-	if err := client.Connect(ctx, nil); err != nil {
+	// Connect and read events (resume from cursor if available)
+	if err := client.Connect(ctx, lastCursor); err != nil {
 		log.Fatalf("Failed to connect to Jetstream: %v", err)
 	}
 
