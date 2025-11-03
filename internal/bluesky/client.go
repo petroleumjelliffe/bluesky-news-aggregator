@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"time"
 )
@@ -131,8 +132,10 @@ func (c *Client) GetFollows(handle string) ([]string, error) {
 		}
 
 		if resp.StatusCode != http.StatusOK {
+			// Read error response body for debugging
+			bodyBytes, _ := io.ReadAll(resp.Body)
 			resp.Body.Close()
-			return nil, fmt.Errorf("API error: %d", resp.StatusCode)
+			return nil, fmt.Errorf("API error: %d, body: %s", resp.StatusCode, string(bodyBytes))
 		}
 
 		var followsResp FollowsResponse
