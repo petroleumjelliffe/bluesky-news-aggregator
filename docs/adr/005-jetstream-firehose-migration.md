@@ -215,9 +215,20 @@ CREATE TABLE IF NOT EXISTS jetstream_state (
 
 **Technical Decisions**:
 
-**WebSocket Library**: `nhooyr.io/websocket`
-- Rationale: Better context support, cleaner API than gorilla/websocket
-- Supports custom compression (needed for zstd)
+**Primary Library**: `github.com/bluesky-social/indigo`
+- Rationale: Official Bluesky implementation with purpose-built firehose support
+- Key packages:
+  - `indigo/events`: Event stream consumption with built-in persistence
+  - `indigo/xrpc`: XRPC client for API calls (replaces custom client)
+  - `indigo/api/bsky`: Generated lexicon types for `app.bsky.*` APIs
+  - `indigo/atproto/identity`: DID and handle resolution
+- Trade-off: "Unstable interfaces under active development" per docs
+- Benefit: Stays in sync with AT Protocol changes, battle-tested in production
+
+**WebSocket Connection**: Use Indigo's event stream patterns
+- Reference: `cmd/relay` service implementation in Indigo
+- Built-in reconnect logic and cursor management
+- No need for separate WebSocket library
 
 **Compression Dictionary**:
 - Source: https://github.com/bluesky-social/jetstream/blob/main/pkg/models/zstd_dictionary
@@ -264,12 +275,18 @@ CREATE TABLE IF NOT EXISTS jetstream_state (
 - Trigger backfill for new DIDs
 
 **DID Resolution Strategy**:
-1. Call `GetFollows()` → returns list of handles
-2. Batch resolve handles → DIDs using `app.bsky.actor.getProfile`
+1. Call `GetFollows()` using `indigo/xrpc` client → returns list of handles
+2. Batch resolve handles → DIDs using `indigo/atproto/identity` package
+   - Use `identity.ResolveHandle()` for individual lookups
    - Batch size: 25 handles per request (rate limit consideration)
    - Cache handle→DID mapping in `follows` table
 3. Store DIDs in database with handles for reference
 4. Update in-memory DID set for filtering
+
+**Migration from Custom Client**:
+- Replace `internal/bluesky/client.go` with `indigo/xrpc.Client`
+- Use generated types from `indigo/api/bsky` instead of manual JSON structs
+- Benefit: Automatic updates when Bluesky adds new lexicon fields
 
 **Handle Changes**:
 - If handle changes but DID stays same: Update `follows.handle` column
@@ -402,6 +419,24 @@ TRUNCATE poll_state;
 - **Strategy**: Start firehose first (real-time), backfill in background
 - User experience: Real-time updates immediate, historical data fills in gradually
 
+## Dependency Management
+
+**Indigo Version Pinning**:
+```go
+// go.mod
+require (
+    github.com/bluesky-social/indigo v0.0.0-YYYYMMDD-HASH
+)
+```
+
+**Strategy**:
+1. **Pin to specific commit** - Use `go get github.com/bluesky-social/indigo@HASH`
+2. **Test before upgrading** - Run integration tests against new version
+3. **Monitor upstream** - Watch Indigo releases for critical fixes
+4. **Accept breaking changes carefully** - Review diffs before updating
+
+**Rationale**: Since Indigo is "unstable", we control when to absorb API changes rather than breaking unexpectedly on `go get -u`.
+
 ## Configuration
 
 ```yaml
@@ -509,14 +544,16 @@ backfill:
 ## Disadvantages
 
 ### Complexity
-- **WebSocket management**: Reconnection logic, cursor persistence
+- **WebSocket management**: Reconnection logic, cursor persistence (mitigated by Indigo)
 - **New failure modes**: Network drops, Jetstream outages
 - **More services**: Firehose + backfill + janitor vs single poller
+- **Unstable dependency**: Indigo under active development with unstable interfaces
 
 ### Trust
 - **No cryptographic verification**: Must trust Jetstream provider
 - **Not in protocol**: Jetstream could change or disappear
 - **Mitigation**: Can self-host Jetstream if needed
+- **Library stability**: Indigo API may break with updates (pin to specific version)
 
 ### Storage
 - **Data loss**: 24h window means historical data is lost
@@ -540,6 +577,54 @@ backfill:
 - Keep poller code functional
 - Switch back if critical issues
 - Database schema compatible with both
+
+## Alternatives Considered
+
+### 1. Custom WebSocket Client (Rejected)
+**Approach**: Build our own firehose consumer using `nhooyr.io/websocket`
+
+**Pros**:
+- Full control over implementation
+- Minimal dependencies
+- Simpler dependency management
+
+**Cons**:
+- Reinventing event stream patterns that Indigo already provides
+- Manual JSON parsing prone to errors when lexicon changes
+- No access to Bluesky's battle-tested code
+- Would need to reimplement cursor persistence, reconnect logic, etc.
+
+**Decision**: Use Indigo instead. The "unstable interfaces" risk is worth the benefits.
+
+### 2. Community Libraries (e.g., karalabe/go-bluesky)
+**Approach**: Use third-party wrapper libraries
+
+**Pros**:
+- Higher-level API, easier to use
+- Stable interfaces
+
+**Cons**:
+- Not official, may lag behind protocol changes
+- Less comprehensive than Indigo
+- No firehose support
+
+**Decision**: Use official Indigo library for protocol-level work.
+
+### 3. Keep Polling, No Firehose (Rejected)
+**Approach**: Optimize current polling architecture
+
+**Pros**:
+- Simple, working today
+- No new dependencies
+- Known failure modes
+
+**Cons**:
+- 15-minute delay (user wants real-time)
+- Unbounded storage growth (user wants 24h retention)
+- High API load (342 calls every 15min)
+- Can't scale beyond followed accounts
+
+**Decision**: Migrate to firehose to meet real-time and storage requirements.
 
 ## Future Enhancements
 
