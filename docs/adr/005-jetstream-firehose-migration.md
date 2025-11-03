@@ -215,25 +215,43 @@ CREATE TABLE IF NOT EXISTS jetstream_state (
 
 **Technical Decisions**:
 
-**Primary Library**: `github.com/bluesky-social/indigo`
-- Rationale: Official Bluesky implementation with purpose-built firehose support
-- Key packages:
-  - `indigo/events`: Event stream consumption with built-in persistence
-  - `indigo/xrpc`: XRPC client for API calls (replaces custom client)
+**Jetstream Client**: `github.com/bluesky-social/jetstream/pkg/client`
+- **Purpose**: WebSocket connection to compressed Jetstream firehose
+- **Features**:
+  - Built-in zstd decompression (uses embedded dictionary from `pkg/models`)
+  - Compression enabled by default: `ClientConfig{Compress: true}`
+  - ~56% bandwidth reduction (482 bytes → 211 bytes per event)
+  - Automatic reconnection and cursor management
+- **Configuration**:
+  ```go
+  config := jetstream.ClientConfig{
+      WebsocketURL: "wss://jetstream2.us-west.bsky.network/subscribe",
+      Compress: true,  // Enable zstd compression
+      WantedCollections: []string{"app.bsky.feed.post"},
+      WantedDids: followedDIDs,  // Filter to followed accounts
+  }
+  ```
+
+**Indigo Library**: `github.com/bluesky-social/indigo`
+- **Purpose**: API calls for backfill and DID resolution (NOT firehose)
+- **Key packages**:
+  - `indigo/xrpc`: XRPC client for API calls (replaces custom `internal/bluesky/client.go`)
   - `indigo/api/bsky`: Generated lexicon types for `app.bsky.*` APIs
   - `indigo/atproto/identity`: DID and handle resolution
-- Trade-off: "Unstable interfaces under active development" per docs
-- Benefit: Stays in sync with AT Protocol changes, battle-tested in production
+- **Trade-off**: "Unstable interfaces under active development" per docs
+- **Benefit**: Stays in sync with AT Protocol changes, battle-tested in production
 
-**WebSocket Connection**: Use Indigo's event stream patterns
-- Reference: `cmd/relay` service implementation in Indigo
-- Built-in reconnect logic and cursor management
-- No need for separate WebSocket library
+**Why Two Libraries?**:
+- **Jetstream** provides simplified JSON events (easy to parse, compressed)
+- **Indigo** provides full AT Protocol API access (for backfill, DID resolution)
+- Jetstream is for real-time ingestion; Indigo is for API calls
+- Both are official Bluesky libraries
 
-**Compression Dictionary**:
-- Source: https://github.com/bluesky-social/jetstream/blob/main/pkg/models/zstd_dictionary
-- Strategy: Download once, bundle in `internal/jetstream/zstd_dictionary` file
-- Load at startup, reuse for all messages (shared state)
+**Compression Details**:
+- Dictionary: Embedded in Jetstream client (no manual download needed)
+- Format: zstd with custom dictionary optimized for AT Protocol events
+- Protocol: WebSocket with `compress=true` parameter or `Socket-Encoding: zstd` header
+- Performance: ~0.44 compression ratio (highly efficient)
 
 **Cursor Persistence**:
 - Storage: File at `data/jetstream_cursor.txt`
@@ -421,21 +439,32 @@ TRUNCATE poll_state;
 
 ## Dependency Management
 
-**Indigo Version Pinning**:
+**Required Libraries**:
 ```go
 // go.mod
 require (
+    github.com/bluesky-social/jetstream v0.0.0-YYYYMMDD-HASH
     github.com/bluesky-social/indigo v0.0.0-YYYYMMDD-HASH
 )
 ```
 
-**Strategy**:
+**Version Pinning Strategy**:
+
+**Jetstream Client**:
+1. **Pin to specific commit** - Use `go get github.com/bluesky-social/jetstream@HASH`
+2. **Update for compression improvements** - Jetstream may optimize dictionary or protocol
+3. **Monitor releases** - Watch for breaking changes in client API
+4. **Test compression** - Verify bandwidth savings after upgrades
+
+**Indigo Library**:
 1. **Pin to specific commit** - Use `go get github.com/bluesky-social/indigo@HASH`
-2. **Test before upgrading** - Run integration tests against new version
-3. **Monitor upstream** - Watch Indigo releases for critical fixes
+2. **Test before upgrading** - Run backfill tests against new version
+3. **Monitor lexicon changes** - New fields in `app.bsky.*` may require code updates
 4. **Accept breaking changes carefully** - Review diffs before updating
 
-**Rationale**: Since Indigo is "unstable", we control when to absorb API changes rather than breaking unexpectedly on `go get -u`.
+**Rationale**: Both are marked "unstable under active development". Pinning lets us control when to absorb API changes rather than breaking unexpectedly on `go get -u`.
+
+**Upgrade Cadence**: Review monthly, upgrade quarterly (unless critical fix needed)
 
 ## Configuration
 
@@ -580,21 +609,21 @@ backfill:
 
 ## Alternatives Considered
 
-### 1. Custom WebSocket Client (Rejected)
-**Approach**: Build our own firehose consumer using `nhooyr.io/websocket`
+### 1. Custom WebSocket Client + Manual zstd (Rejected)
+**Approach**: Build our own firehose consumer using `nhooyr.io/websocket` + `klauspost/compress/zstd`
 
 **Pros**:
 - Full control over implementation
-- Minimal dependencies
-- Simpler dependency management
+- Could customize compression parameters
 
 **Cons**:
-- Reinventing event stream patterns that Indigo already provides
-- Manual JSON parsing prone to errors when lexicon changes
-- No access to Bluesky's battle-tested code
-- Would need to reimplement cursor persistence, reconnect logic, etc.
+- Must manually download and manage zstd dictionary
+- Reinventing reconnect logic, cursor persistence
+- No bandwidth savings without compression working correctly
+- Manual JSON parsing (fragile when Jetstream schema changes)
+- More code to maintain
 
-**Decision**: Use Indigo instead. The "unstable interfaces" risk is worth the benefits.
+**Decision**: Use official Jetstream client. It includes zstd compression with embedded dictionary, automatic reconnection, and cursor management. The "unstable" risk is mitigated by version pinning.
 
 ### 2. Community Libraries (e.g., karalabe/go-bluesky)
 **Approach**: Use third-party wrapper libraries
@@ -610,7 +639,23 @@ backfill:
 
 **Decision**: Use official Indigo library for protocol-level work.
 
-### 3. Keep Polling, No Firehose (Rejected)
+### 3. AT Protocol Firehose (via Indigo) Instead of Jetstream (Rejected)
+**Approach**: Use `indigo/events` to consume raw AT Protocol firehose (repo commits)
+
+**Pros**:
+- Cryptographically verified (repo signatures)
+- Official protocol (not a convenience layer)
+- More control over data validation
+
+**Cons**:
+- **No compression**: Raw CAR files + CBOR encoding, much larger bandwidth
+- **Complex parsing**: Must decode repo commits, extract records from CAR files
+- **More code**: Would need to implement record extraction, validation
+- **Overkill**: We don't need cryptographic verification for link aggregation
+
+**Decision**: Use Jetstream for simplified JSON + zstd compression. We trust Jetstream provider (Bluesky) and prioritize bandwidth efficiency.
+
+### 4. Keep Polling, No Firehose (Rejected)
 **Approach**: Optimize current polling architecture
 
 **Pros**:
