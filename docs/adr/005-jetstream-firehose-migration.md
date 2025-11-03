@@ -176,17 +176,35 @@ wss://jetstream2.us-west.bsky.network/subscribe?wantedCollections=app.bsky.feed.
 
 **Database changes**:
 ```sql
--- New table for tracking follows
-CREATE TABLE follows (
+-- New table for tracking follows (replaces poll_state functionality)
+CREATE TABLE IF NOT EXISTS follows (
     did TEXT PRIMARY KEY,
     handle TEXT NOT NULL,
+    display_name TEXT,
     added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    last_seen_at TIMESTAMP
+    last_seen_at TIMESTAMP,
+    backfill_completed BOOLEAN DEFAULT FALSE
 );
 
 -- Index for quick DID lookups
 CREATE INDEX idx_follows_did ON follows(did);
+CREATE INDEX idx_follows_handle ON follows(handle);
+
+-- New table for cursor persistence (alternative to file)
+CREATE TABLE IF NOT EXISTS jetstream_state (
+    id INTEGER PRIMARY KEY DEFAULT 1,
+    cursor_time_us BIGINT NOT NULL,
+    last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT single_row CHECK (id = 1)
+);
 ```
+
+**Migration from poll_state**:
+- Phase 1: Create `follows` table, keep `poll_state` unchanged
+- Phase 2: Populate `follows` from `poll_state.user_handle` + DID resolution
+- Phase 3: Use `follows` table, stop writing to `poll_state`
+- Phase 4: Truncate `poll_state` (keep for rollback), drop in Phase 5
+- Rollback plan: Re-populate `poll_state` from `follows` if needed
 
 **Features**:
 - WebSocket connection with reconnect logic
@@ -194,6 +212,46 @@ CREATE INDEX idx_follows_did ON follows(did);
 - Event parsing and validation
 - Post processing (extract URLs, metadata)
 - Cursor persistence for replay
+
+**Technical Decisions**:
+
+**WebSocket Library**: `nhooyr.io/websocket`
+- Rationale: Better context support, cleaner API than gorilla/websocket
+- Supports custom compression (needed for zstd)
+
+**Compression Dictionary**:
+- Source: https://github.com/bluesky-social/jetstream/blob/main/pkg/models/zstd_dictionary
+- Strategy: Download once, bundle in `internal/jetstream/zstd_dictionary` file
+- Load at startup, reuse for all messages (shared state)
+
+**Cursor Persistence**:
+- Storage: File at `data/jetstream_cursor.txt`
+- Format: Single line with Unix microseconds timestamp (e.g., `1725911162329308`)
+- Update frequency: Every 10 seconds (configurable)
+- On startup: Read cursor, pass to Jetstream via `?cursor=` parameter
+- Crash recovery: Jetstream replays from cursor (up to 24h buffer)
+
+**Message Type Handling**:
+- `create`: Process normally (new post with URLs)
+- `update`: Re-process post, update metadata if changed
+  - Edge case: URL added in edit → extract and store
+- `delete`: Remove post from database
+  - CASCADE deletes post_links
+  - Links remain if shared by other posts
+  - Trending count decreases automatically
+
+**Identity/Account Events**:
+- `identity`: DID document changed (ignore, DIDs don't change)
+- `account` (deactivated): Remove from `follows` table, stop filtering
+- `account` (takendown): Same as deactivated
+- Implementation: Check event kind, call `didManager.RemoveDID(did)`
+
+**Error Handling**:
+- Malformed JSON: Log error, skip event, continue stream
+- Failed URL extraction: Log, continue (don't crash service)
+- Failed metadata fetch: Already handled by scraper (non-fatal)
+- WebSocket disconnect: Auto-reconnect with exponential backoff (5s, 10s, 30s, 60s max)
+- Persistent failure: Alert after 10 failed reconnects
 
 **Testing**: Run alongside poller, compare ingestion
 
@@ -204,6 +262,19 @@ CREATE INDEX idx_follows_did ON follows(did);
 - Convert handles → DIDs (via `app.bsky.actor.getProfile`)
 - Send `options_update` to WebSocket when follows change
 - Trigger backfill for new DIDs
+
+**DID Resolution Strategy**:
+1. Call `GetFollows()` → returns list of handles
+2. Batch resolve handles → DIDs using `app.bsky.actor.getProfile`
+   - Batch size: 25 handles per request (rate limit consideration)
+   - Cache handle→DID mapping in `follows` table
+3. Store DIDs in database with handles for reference
+4. Update in-memory DID set for filtering
+
+**Handle Changes**:
+- If handle changes but DID stays same: Update `follows.handle` column
+- If account deleted: Remove from `follows` table, stop filtering
+- Refresh mechanism: Compare GetFollows() result with database, sync differences
 
 **Challenges**:
 - Handle limit: 10,000 DIDs max per filter
@@ -219,8 +290,19 @@ CREATE INDEX idx_follows_did ON follows(did);
 
 **Triggers**:
 1. New DID detected: Backfill last 24 hours
-2. Gap detected: Backfill from `time_us` cursor
-3. Cold start: Backfill all followed DIDs
+2. Gap detected: Backfill from `time_us` cursor to last known event
+3. Cold start: Backfill all followed DIDs (last 24h each)
+
+**Gap Detection Logic**:
+- Compare incoming `time_us` with last persisted cursor
+- If gap > 5 minutes (300,000,000 microseconds): Trigger backfill
+- If gap < 5 minutes: Trust Jetstream's 24h buffer, no backfill needed
+- Rationale: Brief disconnects covered by Jetstream replay, long gaps need API backfill
+
+**Backfill Queue**:
+- Priority: Gaps > New DIDs > Cold start
+- Rate limiting: Share same limits as original poller (10 concurrent, 100ms delay)
+- Deduplication: Skip if DID already in backfill queue
 
 ### Phase 4: Data Retention (Week 2)
 
@@ -238,37 +320,87 @@ CREATE INDEX idx_follows_did ON follows(did);
 DELETE FROM posts
 WHERE created_at < NOW() - INTERVAL '24 hours';
 
--- Delete links with no recent posts (CASCADE handles post_links)
+-- Delete links with no recent posts, EXCEPT trending links (5+ shares)
+-- This keeps viral links even if they're older than 24h
 DELETE FROM links
 WHERE id NOT IN (
   SELECT DISTINCT link_id
   FROM post_links pl
   JOIN posts p ON pl.post_id = p.id
   WHERE p.created_at > NOW() - INTERVAL '24 hours'
+)
+AND id NOT IN (
+  -- Keep links with 5+ shares (trending threshold)
+  SELECT link_id
+  FROM post_links
+  GROUP BY link_id
+  HAVING COUNT(*) >= 5
 );
 
 -- Clean poll_state (no longer needed with firehose)
+-- Keep table structure for potential rollback, just truncate data
 TRUNCATE poll_state;
 ```
+
+**Trending Links Exception**:
+- Links with 5+ shares are kept regardless of age
+- If a trending link drops below 5 shares: Grace period of 24h before deletion
+- Implementation: Check share count in janitor, only delete if both conditions met:
+  1. No posts in last 24h AND
+  2. Total share count < 5
 
 ### Phase 5: Monitoring & Deployment (Week 3)
 
 **Metrics to track**:
-- WebSocket connection uptime
-- Events processed per second
-- Backfill queue depth
+- WebSocket connection uptime (%)
+- Events processed per second (rate)
+- Backfill queue depth (count)
 - Database size (should stabilize ~1-2 GB)
-- Latency: Jetstream event → database insert
+- Latency: Jetstream event → database insert (p50, p99)
+- Cursor lag: Current time - last cursor time (seconds)
 
-**Monitoring**:
-- Log reconnection attempts
-- Alert on prolonged disconnections (> 5 min)
-- Track bandwidth usage
+**Monitoring Implementation**:
+- **Logging**: Structured JSON logs to stdout
+  - Level: info, warn, error
+  - Fields: timestamp, component, event_type, metadata
+- **Health endpoint**: HTTP server on `:8081/health`
+  ```json
+  {
+    "status": "healthy",
+    "websocket_connected": true,
+    "last_event_seconds_ago": 2.5,
+    "cursor_time_us": 1725911162329308,
+    "follows_count": 342,
+    "backfill_queue_depth": 0
+  }
+  ```
+- **Alerting** (manual monitoring initially):
+  - WebSocket disconnected > 5 minutes
+  - No events received > 2 minutes
+  - Backfill queue > 50 items
+  - Database size > 3 GB (runaway growth)
+  - Failed reconnects > 10 attempts
 
 **Deployment**:
-- Run on M1 Mac locally initially
-- Docker Compose for production
-- Future: Deploy to VPS/cloud
+- **Phase 1 (Local M1 Mac)**:
+  - Run via `make run-firehose`
+  - Logs to console
+  - Manual restart if needed
+  - Data dir: `./data/` (cursor file, logs)
+
+- **Phase 2 (Production)**:
+  - Docker Compose setup (future)
+  - systemd service or launchd daemon
+  - Log aggregation (file rotation)
+  - Auto-restart on crash
+
+**Cold Start Performance**:
+- 342 accounts × 24h backfill each
+- Sequential processing: ~34 seconds per account
+- Total time: ~3 hours (342 × 34s / 60 / 60)
+- **Optimization**: Run 10 concurrent backfills → ~20 minutes
+- **Strategy**: Start firehose first (real-time), backfill in background
+- User experience: Real-time updates immediate, historical data fills in gradually
 
 ## Configuration
 
