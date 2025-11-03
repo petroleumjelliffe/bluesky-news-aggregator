@@ -54,6 +54,16 @@ type TrendingLink struct {
 	Sharers       pq.StringArray `db:"sharers"`
 }
 
+// Follow represents a followed account (DID)
+type Follow struct {
+	DID               string     `db:"did"`
+	Handle            string     `db:"handle"`
+	DisplayName       *string    `db:"display_name"`
+	AddedAt           time.Time  `db:"added_at"`
+	LastSeenAt        *time.Time `db:"last_seen_at"`
+	BackfillCompleted bool       `db:"backfill_completed"`
+}
+
 // NewDB creates a new database connection
 func NewDB(connectionString string) (*DB, error) {
 	db, err := sqlx.Connect("postgres", connectionString)
@@ -175,10 +185,44 @@ func (db *DB) UpdateCursor(handle, cursor string) error {
 	query := `
 		INSERT INTO poll_state (user_handle, last_cursor, last_polled_at)
 		VALUES ($1, $2, NOW())
-		ON CONFLICT (user_handle) 
+		ON CONFLICT (user_handle)
 		DO UPDATE SET last_cursor = $2, last_polled_at = NOW()
 	`
 
 	_, err := db.Exec(query, handle, cursor)
+	return err
+}
+
+// GetAllFollows returns all followed DIDs
+func (db *DB) GetAllFollows() ([]Follow, error) {
+	var follows []Follow
+	query := `SELECT * FROM follows ORDER BY handle`
+	err := db.Select(&follows, query)
+	return follows, err
+}
+
+// AddFollow adds a new follow to the database
+func (db *DB) AddFollow(did, handle string, displayName *string) error {
+	query := `
+		INSERT INTO follows (did, handle, display_name, added_at)
+		VALUES ($1, $2, $3, NOW())
+		ON CONFLICT (did)
+		DO UPDATE SET handle = $2, display_name = $3
+	`
+	_, err := db.Exec(query, did, handle, displayName)
+	return err
+}
+
+// RemoveFollow removes a follow from the database
+func (db *DB) RemoveFollow(did string) error {
+	query := `DELETE FROM follows WHERE did = $1`
+	_, err := db.Exec(query, did)
+	return err
+}
+
+// UpdateFollowLastSeen updates the last_seen_at timestamp for a DID
+func (db *DB) UpdateFollowLastSeen(did string) error {
+	query := `UPDATE follows SET last_seen_at = NOW() WHERE did = $1`
+	_, err := db.Exec(query, did)
 	return err
 }

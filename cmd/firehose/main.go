@@ -11,7 +11,9 @@ import (
 
 	"github.com/bluesky-social/jetstream/pkg/models"
 	"github.com/petroleumjelliffe/bluesky-news-aggregator/internal/database"
+	"github.com/petroleumjelliffe/bluesky-news-aggregator/internal/didmanager"
 	"github.com/petroleumjelliffe/bluesky-news-aggregator/internal/jetstream"
+	"github.com/petroleumjelliffe/bluesky-news-aggregator/internal/processor"
 	"github.com/spf13/viper"
 )
 
@@ -55,24 +57,43 @@ func main() {
 
 	log.Printf("[INFO] Starting Jetstream firehose consumer...")
 
-	// For now, just test with a simple handler that logs events
+	// Create DID manager and load follows
+	didManager := didmanager.NewManager(db)
+	if err := didManager.LoadFromDatabase(); err != nil {
+		log.Fatalf("Failed to load follows: %v", err)
+	}
+
+	log.Printf("[INFO] Filtering to %d followed DIDs", didManager.Count())
+
+	// Create processor for handling events
+	proc := processor.NewProcessor(db)
+
+	// Event handler that processes filtered events
 	handler := func(ctx context.Context, event *models.Event) error {
-		// Only log commit events for now
+		// Only process commit events for posts
 		if event.Kind == "commit" && event.Commit != nil {
 			if event.Commit.Operation == "create" && event.Commit.Collection == "app.bsky.feed.post" {
-				log.Printf("[EVENT] Post created by %s: %s", event.Did, event.Commit.RKey)
+				// Update last_seen_at for this DID
+				if err := db.UpdateFollowLastSeen(event.Did); err != nil {
+					log.Printf("[WARN] Failed to update last_seen for %s: %v", event.Did, err)
+				}
+
+				// Process the post (extract URLs, store in DB, fetch metadata)
+				if err := proc.ProcessEvent(event); err != nil {
+					log.Printf("[ERROR] Failed to process event: %v", err)
+					return err
+				}
 			}
 		}
 		return nil
 	}
 
-	// Create Jetstream client
-	// TODO: Get actual DIDs from follows table
+	// Create Jetstream client with DID filtering
 	client, err := jetstream.NewClient(&jetstream.Config{
 		WebsocketURL:      "wss://jetstream2.us-west.bsky.network/subscribe",
 		Compress:          true,
 		WantedCollections: []string{"app.bsky.feed.post"},
-		WantedDIDs:        []string{}, // Empty = all posts (for testing)
+		WantedDIDs:        didManager.GetDIDs(),
 	}, handler)
 	if err != nil {
 		log.Fatalf("Failed to create Jetstream client: %v", err)
