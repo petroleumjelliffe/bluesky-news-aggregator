@@ -54,6 +54,16 @@ type TrendingLink struct {
 	Sharers       pq.StringArray `db:"sharers"`
 }
 
+// Follow represents a followed account (DID)
+type Follow struct {
+	DID               string     `db:"did"`
+	Handle            string     `db:"handle"`
+	DisplayName       *string    `db:"display_name"`
+	AddedAt           time.Time  `db:"added_at"`
+	LastSeenAt        *time.Time `db:"last_seen_at"`
+	BackfillCompleted bool       `db:"backfill_completed"`
+}
+
 // NewDB creates a new database connection
 func NewDB(connectionString string) (*DB, error) {
 	db, err := sqlx.Connect("postgres", connectionString)
@@ -175,10 +185,85 @@ func (db *DB) UpdateCursor(handle, cursor string) error {
 	query := `
 		INSERT INTO poll_state (user_handle, last_cursor, last_polled_at)
 		VALUES ($1, $2, NOW())
-		ON CONFLICT (user_handle) 
+		ON CONFLICT (user_handle)
 		DO UPDATE SET last_cursor = $2, last_polled_at = NOW()
 	`
 
 	_, err := db.Exec(query, handle, cursor)
+	return err
+}
+
+// GetAllFollows returns all followed DIDs
+func (db *DB) GetAllFollows() ([]Follow, error) {
+	var follows []Follow
+	query := `SELECT * FROM follows ORDER BY handle`
+	err := db.Select(&follows, query)
+	return follows, err
+}
+
+// AddFollow adds a new follow to the database
+func (db *DB) AddFollow(did, handle string, displayName *string) error {
+	query := `
+		INSERT INTO follows (did, handle, display_name, added_at)
+		VALUES ($1, $2, $3, NOW())
+		ON CONFLICT (did)
+		DO UPDATE SET handle = $2, display_name = $3
+	`
+	_, err := db.Exec(query, did, handle, displayName)
+	return err
+}
+
+// RemoveFollow removes a follow from the database
+func (db *DB) RemoveFollow(did string) error {
+	query := `DELETE FROM follows WHERE did = $1`
+	_, err := db.Exec(query, did)
+	return err
+}
+
+// UpdateFollowLastSeen updates the last_seen_at timestamp for a DID
+func (db *DB) UpdateFollowLastSeen(did string) error {
+	query := `UPDATE follows SET last_seen_at = NOW() WHERE did = $1`
+	_, err := db.Exec(query, did)
+	return err
+}
+
+// MarkBackfillCompleted marks a follow as having completed backfill
+func (db *DB) MarkBackfillCompleted(did string) error {
+	query := `UPDATE follows SET backfill_completed = TRUE WHERE did = $1`
+	_, err := db.Exec(query, did)
+	return err
+}
+
+// GetJetstreamCursor retrieves the last cursor for Jetstream
+func (db *DB) GetJetstreamCursor() (*int64, error) {
+	var cursor sql.NullInt64
+	query := `SELECT cursor_time_us FROM jetstream_state WHERE id = 1`
+	err := db.Get(&cursor, query)
+
+	if err == sql.ErrNoRows {
+		return nil, nil // No cursor yet
+	}
+
+	if err != nil {
+		return nil, err
+	}
+
+	if !cursor.Valid {
+		return nil, nil
+	}
+
+	val := cursor.Int64
+	return &val, nil
+}
+
+// UpdateJetstreamCursor updates the cursor for Jetstream
+func (db *DB) UpdateJetstreamCursor(cursorTimeUS int64) error {
+	query := `
+		INSERT INTO jetstream_state (id, cursor_time_us, last_updated)
+		VALUES (1, $1, NOW())
+		ON CONFLICT (id)
+		DO UPDATE SET cursor_time_us = $1, last_updated = NOW()
+	`
+	_, err := db.Exec(query, cursorTimeUS)
 	return err
 }
