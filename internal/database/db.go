@@ -115,12 +115,19 @@ func (db *DB) GetOrCreateLink(originalURL, normalizedURL string) (*Link, error) 
 // UpdateLinkMetadata updates the OpenGraph metadata for a link
 func (db *DB) UpdateLinkMetadata(linkID int, title, description, imageURL string) error {
 	query := `
-		UPDATE links 
+		UPDATE links
 		SET title = $1, description = $2, og_image_url = $3, last_fetched_at = NOW()
 		WHERE id = $4
 	`
 
 	_, err := db.Exec(query, title, description, imageURL, linkID)
+	return err
+}
+
+// MarkLinkFetched marks a link as having been fetched (even if fetch failed)
+func (db *DB) MarkLinkFetched(linkID int) error {
+	query := `UPDATE links SET last_fetched_at = NOW() WHERE id = $1`
+	_, err := db.Exec(query, linkID)
 	return err
 }
 
@@ -139,7 +146,7 @@ func (db *DB) LinkPostToLink(postID string, linkID int) error {
 // GetTrendingLinks retrieves the most-shared links within a time window
 func (db *DB) GetTrendingLinks(hoursBack int, limit int) ([]TrendingLink, error) {
 	query := `
-		SELECT 
+		SELECT
 			l.id,
 			l.normalized_url,
 			l.original_url,
@@ -148,10 +155,11 @@ func (db *DB) GetTrendingLinks(hoursBack int, limit int) ([]TrendingLink, error)
 			l.og_image_url,
 			COUNT(DISTINCT pl.post_id) as share_count,
 			MAX(p.created_at) as last_shared_at,
-			ARRAY_AGG(DISTINCT p.author_handle) as sharers
+			ARRAY_AGG(DISTINCT COALESCE(f.handle, p.author_handle)) as sharers
 		FROM links l
 		JOIN post_links pl ON l.id = pl.link_id
 		JOIN posts p ON pl.post_id = p.id
+		LEFT JOIN follows f ON p.author_handle = f.did
 		WHERE p.created_at > NOW() - INTERVAL '1 hour' * $1
 		GROUP BY l.id
 		ORDER BY share_count DESC, last_shared_at DESC
