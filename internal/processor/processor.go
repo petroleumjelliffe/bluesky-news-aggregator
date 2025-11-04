@@ -1,3 +1,22 @@
+// Package processor provides the SINGLE processing pipeline for all post sources.
+//
+// ⚠️ ARCHITECTURAL WARNING ⚠️
+//
+// This processor is the ONLY place where post/URL/metadata processing should occur.
+// Both cmd/firehose (Jetstream) and cmd/backfill (Bluesky API) MUST use this processor.
+//
+// DO NOT:
+//   - Create separate processing logic in cmd/ directories
+//   - Duplicate processEmbed(), processURLs(), or similar functions
+//   - Define processing types outside this package
+//
+// DO:
+//   - Add new processing features HERE
+//   - Use adapters to convert external formats to processor types
+//   - Keep processing logic DRY (Don't Repeat Yourself)
+//
+// See: docs/adr/006-shared-processing-architecture.md
+// See: .claude/project_instructions.md
 package processor
 
 import (
@@ -12,7 +31,11 @@ import (
 	"github.com/petroleumjelliffe/bluesky-news-aggregator/internal/urlutil"
 )
 
-// Processor handles processing of Jetstream events into the database
+// Processor handles processing of Jetstream events into the database.
+//
+// This is the SINGLE processing pipeline used by both:
+//   - cmd/firehose (real-time Jetstream events)
+//   - cmd/backfill (historical Bluesky API data)
 type Processor struct {
 	db      *database.DB
 	scraper *scraper.Scraper

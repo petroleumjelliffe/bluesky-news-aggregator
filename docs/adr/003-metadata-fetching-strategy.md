@@ -259,3 +259,83 @@ Error fetching OG data for https://patreon.com/...: status code: 403
 2. Add metadata freshness TTL and re-fetch logic
 3. Better handling of URL shorteners (buff.ly, bit.ly)
 4. Parallel scraping with connection pooling
+
+## Lessons Learned
+
+### Issue #17: Backfill Metadata Extraction Bug (2025-11-04)
+
+**Problem**: After fresh database migration and backfill, 96% of links (2,585 out of 2,586) had no metadata (null title, description, image_url) despite Bluesky providing this data in embed objects.
+
+**Root Cause**: Code duplication and architectural drift
+- `cmd/firehose/main.go` used shared `internal/processor/processor.go` (correct)
+- `cmd/backfill/main.go` had duplicate `processEmbed()` function (incorrect)
+- Backfill's `processEmbed()` only extracted URLs, ignoring metadata
+- When firehose was fixed in Issue #14, backfill was not updated
+
+**Technical Details**:
+```go
+// ❌ INCORRECT (backfill before fix)
+func processEmbed(embed *bluesky.Embed) {
+    if embed.External != nil {
+        urls := []string{embed.External.URI}
+        processURLs(urls)  // Only stores URL, ignores Title/Description/Thumb
+    }
+}
+
+// ✅ CORRECT (backfill after fix)
+func processEmbed(embed *bluesky.Embed) {
+    if embed.External != nil {
+        if embed.External.Title != "" {
+            // Use pre-fetched metadata from Bluesky
+            processExternalWithMetadata(
+                embed.External.URI,
+                embed.External.Title,
+                embed.External.Description,
+                embed.External.Thumb,
+            )
+        }
+    }
+}
+```
+
+**Data Source Differences**:
+- **Jetstream (firehose)**: Returns `Thumb` as blob reference that needs CDN URL conversion
+- **Bluesky API (backfill)**: Returns `Thumb` as direct CDN URL string
+- Both provide pre-fetched metadata in `embed.External`
+
+**Resolution**:
+1. Added `processExternalWithMetadata()` to backfill
+2. Updated backfill's `processEmbed()` to extract metadata
+3. Result: 2,530 out of 2,634 links (96%) now have metadata
+4. Pull Request: #19
+
+**Prevention Measures Implemented**:
+1. **Documentation**: Created `.claude/project_instructions.md` with:
+   - Explicit architecture rules (single processing path)
+   - Red flags that trigger stop-and-ask behavior
+   - Checkpoint protocol for reminders
+   - Case study of this bug
+
+2. **Slash Commands**: Created verification tools:
+   - `/check-duplicates` - Search for duplicate functions before coding
+   - `/check-architecture` - Verify both data sources use processor
+   - `/pre-commit` - Comprehensive checklist before commits
+
+3. **Code Comments**: Added architectural warnings to `internal/processor/processor.go`:
+   ```go
+   // ⚠️ ARCHITECTURAL WARNING ⚠️
+   // This processor is the ONLY place where post/URL/metadata processing should occur.
+   // Both cmd/firehose (Jetstream) and cmd/backfill (Bluesky API) MUST use this processor.
+   ```
+
+4. **ADR Updates**:
+   - This section in ADR 003
+   - New ADR 006 documenting shared processing architecture
+
+**Related Work**:
+- Issue #20: Refactor backfill to fully use shared processor (planned)
+- Issue #21: Create canonical types package (planned)
+- Issue #22: Add architecture documentation and diagrams (planned)
+- ADR 006: Shared Processing Architecture (to be created)
+
+**Key Takeaway**: When two data sources produce the same output (posts with links), they MUST use the same processing logic. Differences in input format should be handled by thin adapter layers, not by duplicating core logic.
