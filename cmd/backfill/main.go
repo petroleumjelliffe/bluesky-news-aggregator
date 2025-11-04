@@ -296,10 +296,6 @@ func (b *Backfiller) processURLs(postURI string, urls []string) int {
 	urlCount := 0
 
 	for _, rawURL := range urls {
-		// Use processor's URL handling (normalization, metadata fetching)
-		// We'll create a simple Post structure that processor can handle
-		// For now, just do basic processing inline
-
 		// Get or create link
 		normalizedURL := normalizeURL(rawURL)
 		link, err := b.db.GetOrCreateLink(rawURL, normalizedURL)
@@ -320,14 +316,54 @@ func (b *Backfiller) processURLs(postURI string, urls []string) int {
 	return urlCount
 }
 
-// processEmbed extracts URLs from embeds
+// processExternalWithMetadata processes an external link with pre-fetched metadata from Bluesky
+func (b *Backfiller) processExternalWithMetadata(postURI, rawURL, title, description, imageURL string) int {
+	// Normalize URL
+	normalizedURL := normalizeURL(rawURL)
+
+	// Get or create link
+	link, err := b.db.GetOrCreateLink(rawURL, normalizedURL)
+	if err != nil {
+		log.Printf("[WARN] Error with link %s: %v", rawURL, err)
+		return 0
+	}
+
+	// Link post to link
+	if err := b.db.LinkPostToLink(postURI, link.ID); err != nil {
+		log.Printf("[WARN] Error linking post to link: %v", err)
+		return 0
+	}
+
+	// Store Bluesky's metadata if we don't have any yet
+	if link.Title == nil {
+		if err := b.db.UpdateLinkMetadata(link.ID, title, description, imageURL); err != nil {
+			log.Printf("[WARN] Error updating link metadata: %v", err)
+		}
+	}
+
+	return 1
+}
+
+// processEmbed extracts URLs and metadata from embeds
 func (b *Backfiller) processEmbed(postURI string, embed *bluesky.Embed) int {
 	urlCount := 0
 
-	// Handle external link embeds
+	// Handle external link embeds with metadata
 	if embed.External != nil {
-		urls := []string{embed.External.URI}
-		urlCount += b.processURLs(postURI, urls)
+		// Use Bluesky's pre-fetched metadata if available
+		if embed.External.Title != "" {
+			urlCount += b.processExternalWithMetadata(
+				postURI,
+				embed.External.URI,
+				embed.External.Title,
+				embed.External.Description,
+				embed.External.Thumb,
+			)
+		} else {
+			// Fallback: just store URL without metadata
+			urls := []string{embed.External.URI}
+			urlCount += b.processURLs(postURI, urls)
+		}
 	}
 
 	// Handle quote posts

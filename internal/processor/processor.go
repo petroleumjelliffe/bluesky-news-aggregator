@@ -1,3 +1,22 @@
+// Package processor provides the SINGLE processing pipeline for all post sources.
+//
+// ⚠️ ARCHITECTURAL WARNING ⚠️
+//
+// This processor is the ONLY place where post/URL/metadata processing should occur.
+// Both cmd/firehose (Jetstream) and cmd/backfill (Bluesky API) MUST use this processor.
+//
+// DO NOT:
+//   - Create separate processing logic in cmd/ directories
+//   - Duplicate processEmbed(), processURLs(), or similar functions
+//   - Define processing types outside this package
+//
+// DO:
+//   - Add new processing features HERE
+//   - Use adapters to convert external formats to processor types
+//   - Keep processing logic DRY (Don't Repeat Yourself)
+//
+// See: docs/adr/006-shared-processing-architecture.md
+// See: .claude/project_instructions.md
 package processor
 
 import (
@@ -12,7 +31,11 @@ import (
 	"github.com/petroleumjelliffe/bluesky-news-aggregator/internal/urlutil"
 )
 
-// Processor handles processing of Jetstream events into the database
+// Processor handles processing of Jetstream events into the database.
+//
+// This is the SINGLE processing pipeline used by both:
+//   - cmd/firehose (real-time Jetstream events)
+//   - cmd/backfill (historical Bluesky API data)
 type Processor struct {
 	db      *database.DB
 	scraper *scraper.Scraper
@@ -96,7 +119,11 @@ func (p *Processor) ProcessEvent(event *models.Event) error {
 
 	// Process embeds (quote posts, external links)
 	if postRecord.Embed != nil {
-		urlCount += p.processEmbed(postURI, postRecord.Embed)
+		// Debug: Log embed data to see what Jetstream is sending
+		if embedJSON, err := json.Marshal(postRecord.Embed); err == nil {
+			log.Printf("[DEBUG-EMBED] %s: %s", event.Did, string(embedJSON))
+		}
+		urlCount += p.processEmbed(postURI, event.Did, postRecord.Embed)
 	}
 
 	if urlCount > 0 {
@@ -133,9 +160,26 @@ func (p *Processor) processURLs(postURI string, urls []string) int {
 
 		urlCount++
 
-		// Fetch OG data if not already fetched
+		// Fetch OG data synchronously if not already fetched
 		if link.Title == nil {
-			go p.fetchOGDataAsync(link.ID, normalizedURL)
+			ogData, err := p.scraper.FetchOGData(normalizedURL)
+			if err != nil {
+				log.Printf("[WARN] Failed to fetch metadata for %s: %v", normalizedURL, err)
+				// Mark as fetched to avoid retry storms
+				if err := p.db.MarkLinkFetched(link.ID); err != nil {
+					log.Printf("[WARN] Failed to mark link as fetched: %v", err)
+				}
+			} else if ogData.Title != "" || ogData.Description != "" || ogData.ImageURL != "" {
+				// Update with fetched metadata
+				if err := p.db.UpdateLinkMetadata(link.ID, ogData.Title, ogData.Description, ogData.ImageURL); err != nil {
+					log.Printf("[WARN] Failed to update link metadata: %v", err)
+				}
+			} else {
+				// No metadata found, mark as fetched
+				if err := p.db.MarkLinkFetched(link.ID); err != nil {
+					log.Printf("[WARN] Failed to mark link as fetched: %v", err)
+				}
+			}
 		}
 	}
 
@@ -143,7 +187,7 @@ func (p *Processor) processURLs(postURI string, urls []string) int {
 }
 
 // processEmbed extracts URLs from embeds (quote posts, external links, etc.)
-func (p *Processor) processEmbed(postURI string, embed *Embed) int {
+func (p *Processor) processEmbed(postURI string, authorDID string, embed *Embed) int {
 	urlCount := 0
 
 	// Handle external link embeds
@@ -152,6 +196,14 @@ func (p *Processor) processEmbed(postURI string, embed *Embed) int {
 		thumbURL := ""
 		if thumb, ok := embed.External.Thumb.(string); ok {
 			thumbURL = thumb
+		} else if thumbMap, ok := embed.External.Thumb.(map[string]interface{}); ok {
+			// Handle blob reference: extract CID and construct CDN URL
+			if ref, hasRef := thumbMap["ref"].(map[string]interface{}); hasRef {
+				if cid, hasCID := ref["$link"].(string); hasCID {
+					// Construct Bluesky CDN URL
+					thumbURL = fmt.Sprintf("https://cdn.bsky.app/img/feed_thumbnail/plain/%s/%s@jpeg", authorDID, cid)
+				}
+			}
 		}
 
 		// Use Bluesky's pre-fetched metadata if available
@@ -179,8 +231,9 @@ func (p *Processor) processEmbed(postURI string, embed *Embed) int {
 		urlCount += p.processURLs(postURI, urls)
 
 		// Recursively process embeds in the quoted post
+		// Note: quoted posts still use the same author DID for blob references
 		if quotedPost.Embed != nil {
-			urlCount += p.processEmbed(postURI, quotedPost.Embed)
+			urlCount += p.processEmbed(postURI, authorDID, quotedPost.Embed)
 		}
 	}
 
@@ -217,18 +270,4 @@ func (p *Processor) processExternalWithMetadata(postURI, rawURL, title, descript
 	}
 
 	return 1
-}
-
-// fetchOGDataAsync fetches OpenGraph data in the background
-func (p *Processor) fetchOGDataAsync(linkID int, url string) {
-	ogData, err := p.scraper.FetchOGData(url)
-	if err != nil {
-		log.Printf("[WARN] Error fetching OG data for %s: %v", url, err)
-		return
-	}
-
-	// Update link with OG data
-	if err := p.db.UpdateLinkMetadata(linkID, ogData.Title, ogData.Description, ogData.ImageURL); err != nil {
-		log.Printf("[WARN] Error updating link metadata: %v", err)
-	}
 }
