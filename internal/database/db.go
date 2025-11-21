@@ -59,9 +59,18 @@ type Follow struct {
 	DID               string     `db:"did"`
 	Handle            string     `db:"handle"`
 	DisplayName       *string    `db:"display_name"`
+	AvatarURL         *string    `db:"avatar_url"`
 	AddedAt           time.Time  `db:"added_at"`
 	LastSeenAt        *time.Time `db:"last_seen_at"`
 	BackfillCompleted bool       `db:"backfill_completed"`
+}
+
+// SharerAvatar represents a user who shared a link with their avatar
+type SharerAvatar struct {
+	Handle      string  `db:"handle" json:"handle"`
+	DisplayName *string `db:"display_name" json:"display_name"`
+	AvatarURL   *string `db:"avatar_url" json:"avatar_url"`
+	DID         string  `db:"did" json:"did"`
 }
 
 // NewDB creates a new database connection
@@ -210,14 +219,14 @@ func (db *DB) GetAllFollows() ([]Follow, error) {
 }
 
 // AddFollow adds a new follow to the database
-func (db *DB) AddFollow(did, handle string, displayName *string) error {
+func (db *DB) AddFollow(did, handle string, displayName *string, avatarURL *string) error {
 	query := `
-		INSERT INTO follows (did, handle, display_name, added_at)
-		VALUES ($1, $2, $3, NOW())
+		INSERT INTO follows (did, handle, display_name, avatar_url, added_at)
+		VALUES ($1, $2, $3, $4, NOW())
 		ON CONFLICT (did)
-		DO UPDATE SET handle = $2, display_name = $3
+		DO UPDATE SET handle = $2, display_name = $3, avatar_url = $4
 	`
-	_, err := db.Exec(query, did, handle, displayName)
+	_, err := db.Exec(query, did, handle, displayName, avatarURL)
 	return err
 }
 
@@ -274,4 +283,24 @@ func (db *DB) UpdateJetstreamCursor(cursorTimeUS int64) error {
 	`
 	_, err := db.Exec(query, cursorTimeUS)
 	return err
+}
+
+// GetLinkSharers retrieves users who shared a specific link with their avatar info
+func (db *DB) GetLinkSharers(linkID int) ([]SharerAvatar, error) {
+	query := `
+		SELECT DISTINCT
+			COALESCE(f.handle, p.author_handle) as handle,
+			f.display_name,
+			f.avatar_url,
+			COALESCE(f.did, p.author_handle) as did
+		FROM post_links pl
+		JOIN posts p ON pl.post_id = p.id
+		LEFT JOIN follows f ON p.author_handle = f.did
+		WHERE pl.link_id = $1
+		ORDER BY handle
+	`
+
+	var sharers []SharerAvatar
+	err := db.Select(&sharers, query, linkID)
+	return sharers, err
 }

@@ -211,6 +211,62 @@ button:active {
     display: block;
 }
 
+/* Avatar Stack Styles */
+.avatar-stack {
+    display: flex;
+    align-items: center;
+    margin-top: 10px;
+}
+
+.avatar-list {
+    display: flex;
+    align-items: center;
+    margin-right: 8px;
+}
+
+.avatar {
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    border: 2px solid white;
+    margin-left: -8px;
+    background: #ddd;
+    object-fit: cover;
+    transition: transform 0.2s, z-index 0.2s;
+    position: relative;
+    cursor: pointer;
+}
+
+.avatar:first-child {
+    margin-left: 0;
+}
+
+.avatar:hover {
+    transform: translateY(-2px) scale(1.1);
+    z-index: 10;
+}
+
+.avatar-more {
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    background: #e0e0e0;
+    border: 2px solid white;
+    margin-left: -8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.75em;
+    color: #666;
+    font-weight: 600;
+}
+
+.avatar-label {
+    font-size: 0.85em;
+    color: #999;
+    margin-right: 8px;
+}
+
 @media (max-width: 768px) {
     .link-card {
         flex-direction: column;
@@ -226,5 +282,13 @@ button:active {
     .control-group {
         flex-direction: column;
         align-items: stretch;
+    }
+    .avatar {
+        width: 28px;
+        height: 28px;
+    }
+    .avatar-more {
+        width: 28px;
+        height: 28px;
     }
 }

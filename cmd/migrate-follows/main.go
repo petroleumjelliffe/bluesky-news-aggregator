@@ -82,12 +82,16 @@ func main() {
 			continue
 		}
 
-		// Extract DID from first post
+		// Extract DID and avatar from first post
 		did := feed.Feed[0].Post.Author.DID
 		displayName := &feed.Feed[0].Post.Author.DisplayName
+		var avatarURL *string
+		if feed.Feed[0].Post.Author.Avatar != "" {
+			avatarURL = &feed.Feed[0].Post.Author.Avatar
+		}
 
 		// Insert into follows table
-		if err := db.AddFollow(did, handle, displayName); err != nil {
+		if err := db.AddFollow(did, handle, displayName, avatarURL); err != nil {
 			log.Printf("[ERROR] Failed to add follow %s (%s): %v", handle, did, err)
 			continue
 		}

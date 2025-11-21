@@ -26,6 +26,7 @@ type Config struct {
 
 // Server wraps the HTTP server
 type Server struct {
+	db         *database.DB
 	aggregator *aggregator.Aggregator
 	router     *chi.Mux
 }
@@ -37,14 +38,15 @@ type TrendingResponse struct {
 
 // LinkResponse is a single link in the API response
 type LinkResponse struct {
-	ID           int      `json:"id"`
-	URL          string   `json:"url"`
-	Title        string   `json:"title"`
-	Description  string   `json:"description"`
-	ImageURL     string   `json:"image_url"`
-	ShareCount   int      `json:"share_count"`
-	LastSharedAt string   `json:"last_shared_at"`
-	Sharers      []string `json:"sharers"`
+	ID            int                     `json:"id"`
+	URL           string                  `json:"url"`
+	Title         string                  `json:"title"`
+	Description   string                  `json:"description"`
+	ImageURL      string                  `json:"image_url"`
+	ShareCount    int                     `json:"share_count"`
+	LastSharedAt  string                  `json:"last_shared_at"`
+	Sharers       []string                `json:"sharers"`
+	SharerAvatars []database.SharerAvatar `json:"sharer_avatars"`
 }
 
 func main() {
@@ -69,6 +71,7 @@ func main() {
 
 	// Create server
 	server := &Server{
+		db:         db,
 		aggregator: agg,
 		router:     chi.NewRouter(),
 	}
@@ -161,8 +164,8 @@ func (s *Server) handleTrending(w http.ResponseWriter, r *http.Request) {
 		hoursStr = "24"
 	}
 	hours, err := strconv.Atoi(hoursStr)
-	if err != nil || hours < 1 || hours > 168 {
-		http.Error(w, "Invalid hours parameter (1-168)", http.StatusBadRequest)
+	if err != nil || hours < 1 || hours > 720 {
+		http.Error(w, "Invalid hours parameter (1-720)", http.StatusBadRequest)
 		return
 	}
 
@@ -190,15 +193,23 @@ func (s *Server) handleTrending(w http.ResponseWriter, r *http.Request) {
 	}
 
 	for i, link := range links {
+		// Fetch sharer avatars for this link
+		sharers, err := s.db.GetLinkSharers(link.ID)
+		if err != nil {
+			log.Printf("Error getting sharers for link %d: %v", link.ID, err)
+			sharers = []database.SharerAvatar{} // Empty on error
+		}
+
 		response.Links[i] = LinkResponse{
-			ID:           link.ID,
-			URL:          link.NormalizedURL,
-			Title:        stringOrEmpty(link.Title),
-			Description:  stringOrEmpty(link.Description),
-			ImageURL:     stringOrEmpty(link.OGImageURL),
-			ShareCount:   link.ShareCount,
-			LastSharedAt: link.LastSharedAt.Format("2006-01-02T15:04:05Z"),
-			Sharers:      []string(link.Sharers),
+			ID:            link.ID,
+			URL:           link.NormalizedURL,
+			Title:         stringOrEmpty(link.Title),
+			Description:   stringOrEmpty(link.Description),
+			ImageURL:      stringOrEmpty(link.OGImageURL),
+			ShareCount:    link.ShareCount,
+			LastSharedAt:  link.LastSharedAt.Format("2006-01-02T15:04:05Z"),
+			Sharers:       []string(link.Sharers),
+			SharerAvatars: sharers,
 		}
 	}
 
