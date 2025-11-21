@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/petroleumjelliffe/bluesky-news-aggregator/internal/database"
 	"github.com/petroleumjelliffe/bluesky-news-aggregator/internal/didmanager"
 	"github.com/petroleumjelliffe/bluesky-news-aggregator/internal/jetstream"
+	"github.com/petroleumjelliffe/bluesky-news-aggregator/internal/maintenance"
 	"github.com/petroleumjelliffe/bluesky-news-aggregator/internal/processor"
 	"github.com/spf13/viper"
 )
@@ -57,6 +59,33 @@ func main() {
 
 	log.Printf("[INFO] Starting Jetstream firehose consumer...")
 
+	// Load cleanup configuration
+	cleanupConfig := maintenance.Config{
+		RetentionHours:       viper.GetInt("cleanup.retention_hours"),
+		TrendingThreshold:    viper.GetInt("cleanup.trending_threshold"),
+		CleanupIntervalMin:   viper.GetInt("cleanup.cleanup_interval_minutes"),
+		CursorUpdateInterval: viper.GetInt("cleanup.cursor_update_seconds"),
+	}
+
+	// Set defaults if not configured
+	if cleanupConfig.RetentionHours == 0 {
+		cleanupConfig.RetentionHours = 24
+	}
+	if cleanupConfig.TrendingThreshold == 0 {
+		cleanupConfig.TrendingThreshold = 5
+	}
+	if cleanupConfig.CleanupIntervalMin == 0 {
+		cleanupConfig.CleanupIntervalMin = 60
+	}
+	if cleanupConfig.CursorUpdateInterval == 0 {
+		cleanupConfig.CursorUpdateInterval = 10
+	}
+
+	// PHASE 1: Startup cleanup
+	if err := maintenance.StartupCleanup(db, cleanupConfig); err != nil {
+		log.Fatalf("Startup cleanup failed: %v", err)
+	}
+
 	// Create DID manager and load follows
 	didManager := didmanager.NewManager(db)
 	if err := didManager.LoadFromDatabase(); err != nil {
@@ -66,19 +95,31 @@ func main() {
 	log.Printf("[INFO] Filtering to %d followed DIDs", didManager.Count())
 
 	// Load last cursor for crash recovery
-	lastCursor, err := db.GetJetstreamCursor()
+	savedCursor, err := db.GetJetstreamCursor()
 	if err != nil {
 		log.Fatalf("Failed to get last cursor: %v", err)
 	}
 
-	if lastCursor != nil {
-		log.Printf("[INFO] Resuming from cursor: %d", *lastCursor)
+	if savedCursor != nil {
+		log.Printf("[INFO] Resuming from cursor: %d", *savedCursor)
 	} else {
 		log.Printf("[INFO] Starting from current time (no previous cursor)")
 	}
 
+	// PHASE 3: Start periodic cleanup ticker
+	maintenance.StartCleanupTicker(db, cleanupConfig)
+
 	// Create processor for handling events
 	proc := processor.NewProcessor(db)
+
+	// Cursor batching variables
+	var (
+		currentCursor    int64
+		lastCursorUpdate time.Time
+		cursorMutex      sync.Mutex
+	)
+
+	cursorUpdateInterval := time.Duration(cleanupConfig.CursorUpdateInterval) * time.Second
 
 	// Event handler that processes filtered events
 	handler := func(ctx context.Context, event *models.Event) error {
@@ -98,9 +139,28 @@ func main() {
 			}
 		}
 
-		// Update cursor periodically (every event for now, could batch)
-		if err := db.UpdateJetstreamCursor(event.TimeUS); err != nil {
-			log.Printf("[WARN] Failed to update cursor: %v", err)
+		// Update cursor in memory (batched writes to database)
+		cursorMutex.Lock()
+		currentCursor = event.TimeUS
+		cursorMutex.Unlock()
+
+		// Periodically flush cursor to database (every N seconds instead of every event)
+		cursorMutex.Lock()
+		shouldUpdate := time.Since(lastCursorUpdate) > cursorUpdateInterval
+		cursorMutex.Unlock()
+
+		if shouldUpdate {
+			cursorMutex.Lock()
+			cursor := currentCursor
+			cursorMutex.Unlock()
+
+			if err := db.UpdateJetstreamCursor(cursor); err != nil {
+				log.Printf("[WARN] Failed to update cursor: %v", err)
+			} else {
+				cursorMutex.Lock()
+				lastCursorUpdate = time.Now()
+				cursorMutex.Unlock()
+			}
 		}
 
 		return nil
@@ -131,6 +191,21 @@ func main() {
 		cancel()
 	}()
 
+	// Flush final cursor on shutdown
+	defer func() {
+		cursorMutex.Lock()
+		cursor := currentCursor
+		cursorMutex.Unlock()
+
+		if cursor > 0 {
+			if err := db.UpdateJetstreamCursor(cursor); err != nil {
+				log.Printf("[ERROR] Failed to save final cursor: %v", err)
+			} else {
+				log.Printf("[INFO] Final cursor saved: %d", cursor)
+			}
+		}
+	}()
+
 	// Start stats reporter
 	go func() {
 		ticker := time.NewTicker(30 * time.Second)
@@ -148,7 +223,7 @@ func main() {
 	}()
 
 	// Connect and read events (resume from cursor if available)
-	if err := client.Connect(ctx, lastCursor); err != nil {
+	if err := client.Connect(ctx, savedCursor); err != nil {
 		log.Fatalf("Failed to connect to Jetstream: %v", err)
 	}
 
