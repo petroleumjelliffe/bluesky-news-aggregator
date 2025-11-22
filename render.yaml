@@ -1,0 +1,45 @@
+# Render Blueprint - Bluesky News Aggregator
+#
+# After deploying:
+# 1. Update docs/js/config.js with your Render API URL
+# 2. Run backfill via Render Shell: ./bin/backfill (first deploy only)
+databases:
+  - name: bluesky-news-db
+    databaseName: bluesky_news
+    user: bluesky
+    plan: free # $7/month, 1GB storage
+    region: virginia
+    
+services:
+  # API Web Service
+  - type: web
+    name: bluesky-news-aggregator-api
+    runtime: go
+    region: virginia
+    buildCommand: go build -o bin/api ./cmd/api && go build -o bin/migrate ./cmd/migrate && go build -o bin/migrate-follows ./cmd/migrate-follows && go build -o bin/backfill ./cmd/backfill
+    preDeployCommand: ./bin/migrate && ./bin/migrate-follows
+    startCommand: ./bin/api
+    healthCheckPath: /health
+    envVars:
+      - fromGroup: bluesky-news-aggreator-prod
+
+  # Firehose Worker - streams real-time posts
+  - type: worker
+    name: bluesky-news-aggregator-firehose
+    runtime: go
+    region: virginia
+    buildCommand: go build -o bin/firehose ./cmd/firehose
+    startCommand: ./bin/firehose
+    envVars:
+      - fromGroup: bluesky-news-aggreator-prod
+
+  # Janitor Cron Job - cleans up old data
+  - type: cron
+    name: bluesky-news-aggregator-cron
+    runtime: go
+    region: virginia
+    schedule: "0 * * * *"
+    buildCommand: go build -o bin/janitor ./cmd/janitor
+    startCommand: ./bin/janitor
+    envVars:
+      - fromGroup: bluesky-news-aggreator-prod
