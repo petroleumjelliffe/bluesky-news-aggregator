@@ -360,7 +360,7 @@ func (db *DB) DeleteUnsharedLinks(cutoff time.Time, trendingThreshold int) (int,
 			LEFT JOIN posts p ON pl.post_id = p.id
 			GROUP BY l.id
 			HAVING COALESCE(MAX(p.created_at), '1970-01-01'::timestamp) < $1
-			   AND COUNT(pl.id) < $2
+			   AND COUNT(pl.link_id) < $2
 		)
 	`
 
