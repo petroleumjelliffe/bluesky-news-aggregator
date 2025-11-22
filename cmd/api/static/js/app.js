@@ -7,6 +7,41 @@ function extractDomain(url) {
     }
 }
 
+function renderAvatarStack(sharers, maxVisible = 5) {
+    if (!sharers || sharers.length === 0) {
+        return '';
+    }
+
+    const visibleSharers = sharers.slice(0, maxVisible);
+    const remainingCount = sharers.length - maxVisible;
+
+    let html = '<div class="avatar-stack">';
+    html += '<span class="avatar-label">Shared by:</span>';
+    html += '<div class="avatar-list">';
+
+    visibleSharers.forEach(sharer => {
+        const displayName = sharer.display_name || sharer.handle;
+        const avatarUrl = sharer.avatar_url || '/static/img/default-avatar.svg';
+
+        html += `<img
+            src="${avatarUrl}"
+            alt="${displayName}"
+            title="${displayName} (@${sharer.handle})"
+            class="avatar"
+            onerror="this.src='/static/img/default-avatar.svg'"
+        />`;
+    });
+
+    if (remainingCount > 0) {
+        html += `<div class="avatar-more" title="${remainingCount} more">+${remainingCount}</div>`;
+    }
+
+    html += '</div>';
+    html += '</div>';
+
+    return html;
+}
+
 function loadTrending() {
     const hours = document.getElementById('hours').value;
     const limit = document.getElementById('limit').value;
@@ -44,8 +79,8 @@ function loadTrending() {
                         ${link.description ? `<p class="link-description">${link.description}</p>` : ''}
                         <div class="link-meta">
                             <span class="share-count">★ ${link.share_count} share${link.share_count !== 1 ? 's' : ''}</span>
-                            <span class="sharers">Shared by: ${link.sharers.slice(0, 3).join(', ')}${link.sharers.length > 3 ? ` and ${link.sharers.length - 3} more` : ''}</span>
                         </div>
+                        ${renderAvatarStack(link.sharer_avatars)}
                         <button class="posts-toggle" onclick="togglePosts(this, ${link.id})">Show Posts ▼</button>
                         <div class="posts-container" id="posts-${link.id}">
                             <div class="loading">Posts will be loaded here in Phase 3...</div>
