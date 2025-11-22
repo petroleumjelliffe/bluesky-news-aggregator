@@ -43,3 +43,7 @@ vendor/
 # AI 
 .claude/logs/*.log
 logs/
+.claude/
+
+
+
