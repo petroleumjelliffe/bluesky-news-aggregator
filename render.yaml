@@ -13,7 +13,7 @@ databases:
 services:
   # API Web Service - serves the REST API
   - type: web
-    name: bluesky-news-api
+    name: bluesky-news-aggregator-api
     runtime: go
     plan: starter # $7/month
     region: oregon
@@ -55,7 +55,7 @@ services:
 
   # Firehose Worker - streams real-time posts
   - type: worker
-    name: bluesky-firehose
+    name: bluesky-news-aggregator-firehose
     runtime: go
     plan: starter # $7/month
     region: oregon
@@ -91,7 +91,7 @@ services:
 
   # Janitor Cron Job - cleans up old data
   - type: cron
-    name: bluesky-janitor
+    name: bluesky-news-aggregator-cron
     runtime: go
     plan: starter
     region: oregon
