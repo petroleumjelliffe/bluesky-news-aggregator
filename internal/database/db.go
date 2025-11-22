@@ -101,22 +101,18 @@ func (db *DB) InsertPost(post *Post) error {
 }
 
 // GetOrCreateLink gets an existing link or creates a new one
+// Uses ON CONFLICT to handle race conditions gracefully
 func (db *DB) GetOrCreateLink(originalURL, normalizedURL string) (*Link, error) {
 	link := &Link{}
 
-	// Try to get existing
-	query := `SELECT * FROM links WHERE normalized_url = $1`
-	err := db.Get(link, query, normalizedURL)
-
-	if err == sql.ErrNoRows {
-		// Create new
-		query = `
-			INSERT INTO links (original_url, normalized_url)
-			VALUES ($1, $2)
-			RETURNING *
-		`
-		err = db.Get(link, query, originalURL, normalizedURL)
-	}
+	// Use upsert to avoid race conditions between concurrent inserts
+	query := `
+		INSERT INTO links (original_url, normalized_url)
+		VALUES ($1, $2)
+		ON CONFLICT (normalized_url) DO UPDATE SET normalized_url = EXCLUDED.normalized_url
+		RETURNING *
+	`
+	err := db.Get(link, query, originalURL, normalizedURL)
 
 	return link, err
 }
