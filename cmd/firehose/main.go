@@ -11,47 +11,24 @@ import (
 	"time"
 
 	"github.com/bluesky-social/jetstream/pkg/models"
+	"github.com/petroleumjelliffe/bluesky-news-aggregator/internal/config"
 	"github.com/petroleumjelliffe/bluesky-news-aggregator/internal/database"
 	"github.com/petroleumjelliffe/bluesky-news-aggregator/internal/didmanager"
 	"github.com/petroleumjelliffe/bluesky-news-aggregator/internal/jetstream"
 	"github.com/petroleumjelliffe/bluesky-news-aggregator/internal/maintenance"
 	"github.com/petroleumjelliffe/bluesky-news-aggregator/internal/processor"
-	"github.com/spf13/viper"
 )
 
 func main() {
-	// Load configuration
-	viper.SetConfigName("config")
-	viper.SetConfigType("yaml")
-	viper.AddConfigPath("config")
-
-	if err := viper.ReadInConfig(); err != nil {
-		log.Fatalf("Failed to read config: %v", err)
+	// Load configuration (supports env vars)
+	cfg, err := config.Load()
+	if err != nil {
+		log.Fatalf("Failed to load config: %v", err)
 	}
 
-	// Connect to database
-	password := viper.GetString("database.password")
-	var connStr string
-	if password == "" {
-		connStr = fmt.Sprintf("host=%s port=%d user=%s dbname=%s sslmode=%s",
-			viper.GetString("database.host"),
-			viper.GetInt("database.port"),
-			viper.GetString("database.user"),
-			viper.GetString("database.dbname"),
-			viper.GetString("database.sslmode"),
-		)
-	} else {
-		connStr = fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
-			viper.GetString("database.host"),
-			viper.GetInt("database.port"),
-			viper.GetString("database.user"),
-			password,
-			viper.GetString("database.dbname"),
-			viper.GetString("database.sslmode"),
-		)
-	}
-
-	db, err := database.NewDB(connStr)
+	// Connect to database (log safe connection string without password)
+	log.Printf("[INFO] Connecting to database: %s", cfg.Database.DatabaseConnStringSafe())
+	db, err := database.NewDB(cfg.Database.DatabaseConnString())
 	if err != nil {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
@@ -61,24 +38,10 @@ func main() {
 
 	// Load cleanup configuration
 	cleanupConfig := maintenance.Config{
-		RetentionHours:       viper.GetInt("cleanup.retention_hours"),
-		TrendingThreshold:    viper.GetInt("cleanup.trending_threshold"),
-		CleanupIntervalMin:   viper.GetInt("cleanup.cleanup_interval_minutes"),
-		CursorUpdateInterval: viper.GetInt("cleanup.cursor_update_seconds"),
-	}
-
-	// Set defaults if not configured
-	if cleanupConfig.RetentionHours == 0 {
-		cleanupConfig.RetentionHours = 24
-	}
-	if cleanupConfig.TrendingThreshold == 0 {
-		cleanupConfig.TrendingThreshold = 5
-	}
-	if cleanupConfig.CleanupIntervalMin == 0 {
-		cleanupConfig.CleanupIntervalMin = 60
-	}
-	if cleanupConfig.CursorUpdateInterval == 0 {
-		cleanupConfig.CursorUpdateInterval = 10
+		RetentionHours:       cfg.Cleanup.RetentionHours,
+		TrendingThreshold:    cfg.Cleanup.TrendingThreshold,
+		CleanupIntervalMin:   cfg.Cleanup.CleanupIntervalMin,
+		CursorUpdateInterval: cfg.Cleanup.CursorUpdateSeconds,
 	}
 
 	// PHASE 1: Startup cleanup

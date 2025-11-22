@@ -5,114 +5,67 @@ import (
 	"log"
 	"time"
 
+	"github.com/petroleumjelliffe/bluesky-news-aggregator/internal/config"
 	"github.com/petroleumjelliffe/bluesky-news-aggregator/internal/database"
-	"github.com/spf13/viper"
 )
 
-// Config holds janitor configuration
-type Config struct {
-	DatabaseURL       string
+// JanitorConfig holds janitor-specific configuration
+type JanitorConfig struct {
 	PostRetentionDays int
 	LinkRetentionDays int
 	DryRun            bool
 }
 
 func main() {
-	// Load configuration
-	config, err := loadConfig()
+	// Load configuration (supports env vars)
+	cfg, err := config.Load()
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}
 
-	// Initialize database
-	db, err := database.NewDB(config.DatabaseURL)
+	// Initialize database (log safe connection string without password)
+	log.Printf("[INFO] Connecting to database: %s", cfg.Database.DatabaseConnStringSafe())
+	db, err := database.NewDB(cfg.Database.DatabaseConnString())
 	if err != nil {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
 	defer db.Close()
 
+	// Default retention periods (can be overridden later if needed)
+	janitorCfg := &JanitorConfig{
+		PostRetentionDays: 30,
+		LinkRetentionDays: 90,
+		DryRun:            false,
+	}
+
 	log.Printf("[INFO] Starting database cleanup...")
-	if config.DryRun {
+	if janitorCfg.DryRun {
 		log.Printf("[INFO] DRY RUN MODE - No changes will be made")
 	}
 
 	// Clean up old posts
-	if err := cleanupOldPosts(db, config); err != nil {
+	if err := cleanupOldPosts(db, janitorCfg); err != nil {
 		log.Fatalf("Failed to clean up posts: %v", err)
 	}
 
 	// Clean up orphaned links (links with no post_links references)
-	if err := cleanupOrphanedLinks(db, config); err != nil {
+	if err := cleanupOrphanedLinks(db, janitorCfg); err != nil {
 		log.Fatalf("Failed to clean up orphaned links: %v", err)
 	}
 
 	// Clean up old links (based on last shared date)
-	if err := cleanupOldLinks(db, config); err != nil {
+	if err := cleanupOldLinks(db, janitorCfg); err != nil {
 		log.Fatalf("Failed to clean up old links: %v", err)
 	}
 
 	log.Printf("[INFO] Database cleanup complete!")
 }
 
-func loadConfig() (*Config, error) {
-	viper.SetConfigName("config")
-	viper.SetConfigType("yaml")
-	viper.AddConfigPath("./config")
-	viper.AddConfigPath(".")
-
-	if err := viper.ReadInConfig(); err != nil {
-		return nil, err
-	}
-
-	// Build connection string, handling empty password
-	password := viper.GetString("database.password")
-	var dbURL string
-	if password == "" {
-		dbURL = fmt.Sprintf(
-			"host=%s port=%d user=%s dbname=%s sslmode=%s",
-			viper.GetString("database.host"),
-			viper.GetInt("database.port"),
-			viper.GetString("database.user"),
-			viper.GetString("database.dbname"),
-			viper.GetString("database.sslmode"),
-		)
-	} else {
-		dbURL = fmt.Sprintf(
-			"host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
-			viper.GetString("database.host"),
-			viper.GetInt("database.port"),
-			viper.GetString("database.user"),
-			password,
-			viper.GetString("database.dbname"),
-			viper.GetString("database.sslmode"),
-		)
-	}
-
-	// Default retention periods
-	postRetentionDays := 30
-	linkRetentionDays := 90
-
-	// Check if retention config exists
-	if viper.IsSet("retention.post_days") {
-		postRetentionDays = viper.GetInt("retention.post_days")
-	}
-	if viper.IsSet("retention.link_days") {
-		linkRetentionDays = viper.GetInt("retention.link_days")
-	}
-
-	return &Config{
-		DatabaseURL:       dbURL,
-		PostRetentionDays: postRetentionDays,
-		LinkRetentionDays: linkRetentionDays,
-		DryRun:            false, // Can be set via flag if needed
-	}, nil
-}
-
 // cleanupOldPosts removes posts older than the retention period
-func cleanupOldPosts(db *database.DB, config *Config) error {
-	cutoff := time.Now().AddDate(0, 0, -config.PostRetentionDays)
+func cleanupOldPosts(db *database.DB, cfg *JanitorConfig) error {
+	cutoff := time.Now().AddDate(0, 0, -cfg.PostRetentionDays)
 
-	log.Printf("[INFO] Cleaning up posts older than %d days (before %s)...", config.PostRetentionDays, cutoff.Format("2006-01-02"))
+	log.Printf("[INFO] Cleaning up posts older than %d days (before %s)...", cfg.PostRetentionDays, cutoff.Format("2006-01-02"))
 
 	// First, count how many posts will be deleted
 	var count int
@@ -128,7 +81,7 @@ func cleanupOldPosts(db *database.DB, config *Config) error {
 		return nil
 	}
 
-	if config.DryRun {
+	if cfg.DryRun {
 		log.Printf("[DRY RUN] Would delete %d posts", count)
 		return nil
 	}
@@ -162,7 +115,7 @@ func cleanupOldPosts(db *database.DB, config *Config) error {
 }
 
 // cleanupOrphanedLinks removes links that are no longer referenced by any posts
-func cleanupOrphanedLinks(db *database.DB, config *Config) error {
+func cleanupOrphanedLinks(db *database.DB, cfg *JanitorConfig) error {
 	log.Printf("[INFO] Cleaning up orphaned links (no post references)...")
 
 	// Count orphaned links
@@ -185,7 +138,7 @@ func cleanupOrphanedLinks(db *database.DB, config *Config) error {
 		return nil
 	}
 
-	if config.DryRun {
+	if cfg.DryRun {
 		log.Printf("[DRY RUN] Would delete %d orphaned links", count)
 		return nil
 	}
@@ -209,10 +162,10 @@ func cleanupOrphanedLinks(db *database.DB, config *Config) error {
 }
 
 // cleanupOldLinks removes links that haven't been shared recently
-func cleanupOldLinks(db *database.DB, config *Config) error {
-	cutoff := time.Now().AddDate(0, 0, -config.LinkRetentionDays)
+func cleanupOldLinks(db *database.DB, cfg *JanitorConfig) error {
+	cutoff := time.Now().AddDate(0, 0, -cfg.LinkRetentionDays)
 
-	log.Printf("[INFO] Cleaning up links not shared since %d days ago (before %s)...", config.LinkRetentionDays, cutoff.Format("2006-01-02"))
+	log.Printf("[INFO] Cleaning up links not shared since %d days ago (before %s)...", cfg.LinkRetentionDays, cutoff.Format("2006-01-02"))
 
 	// Count old links (links where the most recent post is older than cutoff)
 	var count int
@@ -236,7 +189,7 @@ func cleanupOldLinks(db *database.DB, config *Config) error {
 		return nil
 	}
 
-	if config.DryRun {
+	if cfg.DryRun {
 		log.Printf("[DRY RUN] Would delete %d old links and their post_links", count)
 		return nil
 	}
