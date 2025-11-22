@@ -22,9 +22,10 @@ go.work
 # Dependency directories
 vendor/
 
-# Environment files
+# Environment files (contain secrets)
 .env
 .env.local
+.env.production
 
 # IDE specific files
 .vscode/
@@ -42,3 +43,7 @@ vendor/
 # AI 
 .claude/logs/*.log
 logs/
+.claude/
+
+
+
