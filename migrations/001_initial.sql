@@ -9,8 +9,8 @@ CREATE TABLE IF NOT EXISTS posts (
     indexed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE INDEX idx_posts_created_at ON posts(created_at);
-CREATE INDEX idx_posts_author ON posts(author_handle);
+CREATE INDEX IF NOT EXISTS idx_posts_created_at ON posts(created_at);
+CREATE INDEX IF NOT EXISTS idx_posts_author ON posts(author_handle);
 
 -- Links table
 CREATE TABLE IF NOT EXISTS links (
@@ -24,7 +24,7 @@ CREATE TABLE IF NOT EXISTS links (
     last_fetched_at TIMESTAMP
 );
 
-CREATE INDEX idx_links_normalized ON links(normalized_url);
+CREATE INDEX IF NOT EXISTS idx_links_normalized ON links(normalized_url);
 
 -- Post-Link junction table
 CREATE TABLE IF NOT EXISTS post_links (
@@ -33,8 +33,8 @@ CREATE TABLE IF NOT EXISTS post_links (
     PRIMARY KEY (post_id, link_id)
 );
 
-CREATE INDEX idx_post_links_link ON post_links(link_id);
-CREATE INDEX idx_post_links_post ON post_links(post_id);
+CREATE INDEX IF NOT EXISTS idx_post_links_link ON post_links(link_id);
+CREATE INDEX IF NOT EXISTS idx_post_links_post ON post_links(post_id);
 
 -- Poll state tracking
 CREATE TABLE IF NOT EXISTS poll_state (

@@ -12,8 +12,8 @@ CREATE TABLE IF NOT EXISTS follows (
 );
 
 -- Indexes for quick DID and handle lookups
-CREATE INDEX idx_follows_did ON follows(did);
-CREATE INDEX idx_follows_handle ON follows(handle);
+CREATE INDEX IF NOT EXISTS idx_follows_did ON follows(did);
+CREATE INDEX IF NOT EXISTS idx_follows_handle ON follows(handle);
 
 -- Table for Jetstream cursor persistence
 CREATE TABLE IF NOT EXISTS jetstream_state (
