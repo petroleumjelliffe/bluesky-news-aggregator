@@ -8,7 +8,7 @@ databases:
     databaseName: bluesky_news
     user: bluesky
     plan: free # $7/month, 1GB storage
-    region: oregon
+    region: virginia
 
 services:
   # API Web Service - serves the REST API
@@ -16,7 +16,7 @@ services:
     name: bluesky-news-aggregator-api
     runtime: go
     plan: starter # $7/month
-    region: oregon
+    region: virginia
     buildCommand: go build -o bin/api ./cmd/api && go build -o bin/migrate ./cmd/migrate
     preDeployCommand: ./bin/migrate
     startCommand: ./bin/api
@@ -58,7 +58,7 @@ services:
     name: bluesky-news-aggregator-firehose
     runtime: go
     plan: starter # $7/month
-    region: oregon
+    region: virginia
     buildCommand: go build -o bin/firehose ./cmd/firehose
     startCommand: ./bin/firehose
     envVars:
@@ -94,7 +94,7 @@ services:
     name: bluesky-news-aggregator-cron
     runtime: go
     plan: starter
-    region: oregon
+    region: virginia
     schedule: "0 * * * *" # Every hour
     buildCommand: go build -o bin/janitor ./cmd/janitor
     startCommand: ./bin/janitor
