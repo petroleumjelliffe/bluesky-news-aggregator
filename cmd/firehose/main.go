@@ -89,6 +89,12 @@ func main() {
 		// Only process commit events for posts
 		if event.Kind == "commit" && event.Commit != nil {
 			if event.Commit.Operation == "create" && event.Commit.Collection == "app.bsky.feed.post" {
+				// LOCAL FILTER: Only process posts from accounts we follow
+				// We filter client-side because 300+ DIDs in the WebSocket URL exceeds length limits
+				if !didManager.IsFollowed(event.Did) {
+					return nil // Skip posts from accounts we don't follow
+				}
+
 				// Update last_seen_at for this DID
 				if err := db.UpdateFollowLastSeen(event.Did); err != nil {
 					log.Printf("[WARN] Failed to update last_seen for %s: %v", event.Did, err)
@@ -129,12 +135,13 @@ func main() {
 		return nil
 	}
 
-	// Create Jetstream client with DID filtering
+	// Create Jetstream client (filtering is done client-side to avoid URL length limits)
 	client, err := jetstream.NewClient(&jetstream.Config{
 		WebsocketURL:      "wss://jetstream2.us-west.bsky.network/subscribe",
 		Compress:          true,
 		WantedCollections: []string{"app.bsky.feed.post"},
-		WantedDIDs:        didManager.GetDIDs(),
+		// Note: WantedDIDs removed - 300+ DIDs exceeds WebSocket URL length limit
+		// Filtering is done client-side in the handler using didManager.IsFollowed()
 	}, handler)
 	if err != nil {
 		log.Fatalf("Failed to create Jetstream client: %v", err)
