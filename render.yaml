@@ -17,7 +17,8 @@ services:
     runtime: go
     plan: starter  # $7/month
     region: oregon
-    buildCommand: go build -o bin/api ./cmd/api
+    buildCommand: go build -o bin/api ./cmd/api && go build -o bin/migrate ./cmd/migrate
+    preDeployCommand: ./bin/migrate
     startCommand: ./bin/api
     healthCheckPath: /health
     envVars:
