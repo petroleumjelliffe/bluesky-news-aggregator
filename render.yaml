@@ -1,0 +1,123 @@
+# Render Blueprint - Bluesky News Aggregator
+# Deploy all services with: https://render.com/deploy
+#
+# After deploying, update docs/js/config.js with your API URL
+
+databases:
+  - name: bluesky-news-db
+    databaseName: bluesky_news
+    user: bluesky
+    plan: starter  # $7/month, 1GB storage
+    region: oregon
+
+services:
+  # API Web Service - serves the REST API
+  - type: web
+    name: bluesky-news-api
+    runtime: go
+    plan: starter  # $7/month
+    region: oregon
+    buildCommand: go build -o bin/api ./cmd/api && go build -o bin/migrate ./cmd/migrate
+    preDeployCommand: ./bin/migrate
+    startCommand: ./bin/api
+    healthCheckPath: /health
+    envVars:
+      - key: DB_HOST
+        fromDatabase:
+          name: bluesky-news-db
+          property: host
+      - key: DB_PORT
+        fromDatabase:
+          name: bluesky-news-db
+          property: port
+      - key: DB_USER
+        fromDatabase:
+          name: bluesky-news-db
+          property: user
+      - key: DB_PASSWORD
+        fromDatabase:
+          name: bluesky-news-db
+          property: password
+      - key: DB_NAME
+        fromDatabase:
+          name: bluesky-news-db
+          property: database
+      - key: DB_SSLMODE
+        value: require
+      - key: SERVER_PORT
+        value: "8080"
+      - key: CORS_ALLOW_ORIGIN
+        sync: false  # Set to your GitHub Pages URL after deployment
+      - key: BLUESKY_HANDLE
+        sync: false  # Set in Render dashboard
+      - key: BLUESKY_PASSWORD
+        sync: false  # Set in Render dashboard
+
+  # Firehose Worker - streams real-time posts
+  - type: worker
+    name: bluesky-firehose
+    runtime: go
+    plan: starter  # $7/month
+    region: oregon
+    buildCommand: go build -o bin/firehose ./cmd/firehose
+    startCommand: ./bin/firehose
+    envVars:
+      - key: DB_HOST
+        fromDatabase:
+          name: bluesky-news-db
+          property: host
+      - key: DB_PORT
+        fromDatabase:
+          name: bluesky-news-db
+          property: port
+      - key: DB_USER
+        fromDatabase:
+          name: bluesky-news-db
+          property: user
+      - key: DB_PASSWORD
+        fromDatabase:
+          name: bluesky-news-db
+          property: password
+      - key: DB_NAME
+        fromDatabase:
+          name: bluesky-news-db
+          property: database
+      - key: DB_SSLMODE
+        value: require
+      - key: BLUESKY_HANDLE
+        sync: false
+      - key: BLUESKY_PASSWORD
+        sync: false
+
+  # Janitor Cron Job - cleans up old data
+  - type: cron
+    name: bluesky-janitor
+    runtime: go
+    plan: starter
+    region: oregon
+    schedule: "0 * * * *"  # Every hour
+    buildCommand: go build -o bin/janitor ./cmd/janitor
+    startCommand: ./bin/janitor
+    envVars:
+      - key: DB_HOST
+        fromDatabase:
+          name: bluesky-news-db
+          property: host
+      - key: DB_PORT
+        fromDatabase:
+          name: bluesky-news-db
+          property: port
+      - key: DB_USER
+        fromDatabase:
+          name: bluesky-news-db
+          property: user
+      - key: DB_PASSWORD
+        fromDatabase:
+          name: bluesky-news-db
+          property: password
+      - key: DB_NAME
+        fromDatabase:
+          name: bluesky-news-db
+          property: database
+      - key: DB_SSLMODE
+        value: require

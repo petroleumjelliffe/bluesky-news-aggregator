@@ -138,14 +138,64 @@ go test ./...
 └── config/               # Configuration files
 ```
 
+## Deployment
+
+### Option 1: Render + GitHub Pages (Recommended)
+
+**Frontend (GitHub Pages):**
+1. Enable GitHub Pages in repository settings
+2. Set source to "Deploy from branch" → `main` → `/docs`
+3. Update `docs/js/config.js` with your Render API URL
+
+**Backend (Render):**
+1. Create a Render account at https://render.com
+2. Click "New" → "Blueprint" and connect this repository
+3. Render will use `render.yaml` to create all services
+4. Set environment variables in Render dashboard:
+   - `BLUESKY_HANDLE`: your.handle.bsky.social
+   - `BLUESKY_PASSWORD`: your app password (from https://bsky.app/settings/app-passwords)
+   - `CORS_ALLOW_ORIGIN`: https://yourusername.github.io
+
+**Estimated Cost:** ~$21/month (API $7 + Worker $7 + Database $7)
+
+### Option 2: Local Development
+
+See [Setup](#setup) section above.
+
+### Environment Variables
+
+For production, use environment variables instead of config.yaml:
+
+```bash
+# Database
+DB_HOST=localhost
+DB_PORT=5432
+DB_USER=postgres
+DB_PASSWORD=your-password
+DB_NAME=bluesky_news
+DB_SSLMODE=require  # Use 'require' in production
+
+# Bluesky
+BLUESKY_HANDLE=your.handle.bsky.social
+BLUESKY_PASSWORD=your-app-password
+
+# Server
+SERVER_HOST=0.0.0.0
+SERVER_PORT=8080
+CORS_ALLOW_ORIGIN=https://your-domain.com
+RATE_LIMIT_RPM=100
+```
+
+See `.env.example` for the complete list.
+
 ## TODO
 
 - [ ] Add authentication for multi-user support
 - [ ] Implement additional ranking strategies (recency-weighted, velocity)
 - [ ] Add caching layer (Redis)
-- [ ] Build frontend UI
+- [x] Build frontend UI
 - [ ] Add tests
-- [ ] Docker deployment
+- [x] Render deployment
 - [ ] Support for custom lists beyond follows
 
 ## License
