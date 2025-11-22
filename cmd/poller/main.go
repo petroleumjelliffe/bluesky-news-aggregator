@@ -7,27 +7,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/spf13/viper"
 	"github.com/petroleumjelliffe/bluesky-news-aggregator/internal/bluesky"
+	"github.com/petroleumjelliffe/bluesky-news-aggregator/internal/config"
 	"github.com/petroleumjelliffe/bluesky-news-aggregator/internal/database"
 	"github.com/petroleumjelliffe/bluesky-news-aggregator/internal/scraper"
 	"github.com/petroleumjelliffe/bluesky-news-aggregator/internal/urlutil"
 )
-
-// Config holds application configuration
-type Config struct {
-	DatabaseURL           string
-	BlueskyHandle         string
-	BlueskyPassword       string
-	PollingInterval       time.Duration
-	PostsPerPage          int
-	MaxConcurrent         int
-	RateLimitMS           int
-	InitialLookbackHours  int
-	MaxRetries            int
-	RetryBackoffMS        int
-	MaxPagesPerUser       int
-}
 
 // Poller handles the polling of Bluesky feeds
 type Poller struct {
@@ -35,25 +20,26 @@ type Poller struct {
 	bskyClient *bluesky.Client
 	scraper    *scraper.Scraper
 	userHandle string
-	config     *Config
+	config     *config.Config
 }
 
 func main() {
-	// Load configuration
-	config, err := loadConfig()
+	// Load configuration (supports env vars)
+	cfg, err := config.Load()
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}
 
-	// Initialize database
-	db, err := database.NewDB(config.DatabaseURL)
+	// Initialize database (log safe connection string without password)
+	log.Printf("Connecting to database: %s", cfg.Database.DatabaseConnStringSafe())
+	db, err := database.NewDB(cfg.Database.DatabaseConnString())
 	if err != nil {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
 	defer db.Close()
 
 	// Initialize Bluesky client
-	bskyClient, err := bluesky.NewClient(config.BlueskyHandle, config.BlueskyPassword)
+	bskyClient, err := bluesky.NewClient(cfg.Bluesky.Handle, cfg.Bluesky.Password)
 	if err != nil {
 		log.Fatalf("Failed to create Bluesky client: %v", err)
 	}
@@ -63,75 +49,23 @@ func main() {
 		db:         db,
 		bskyClient: bskyClient,
 		scraper:    scraper.NewScraper(),
-		userHandle: config.BlueskyHandle,
-		config:     config,
+		userHandle: cfg.Bluesky.Handle,
+		config:     cfg,
 	}
 
-	log.Printf("Starting poller for %s", config.BlueskyHandle)
+	log.Printf("Starting poller for %s", cfg.Bluesky.Handle)
 
 	// Run initial poll
 	poller.Poll()
 
 	// Run on schedule
-	ticker := time.NewTicker(config.PollingInterval)
+	pollingInterval := time.Duration(cfg.Polling.IntervalMinutes) * time.Minute
+	ticker := time.NewTicker(pollingInterval)
 	defer ticker.Stop()
 
 	for range ticker.C {
 		poller.Poll()
 	}
-}
-
-func loadConfig() (*Config, error) {
-	viper.SetConfigName("config")
-	viper.SetConfigType("yaml")
-	viper.AddConfigPath("./config")
-	viper.AddConfigPath(".")
-
-	if err := viper.ReadInConfig(); err != nil {
-		return nil, err
-	}
-
-	log.Printf("Using config file: %s", viper.ConfigFileUsed())
-
-	// Build connection string, handling empty password
-	password := viper.GetString("database.password")
-	var dbURL string
-	if password == "" {
-		dbURL = fmt.Sprintf(
-			"host=%s port=%d user=%s dbname=%s sslmode=%s",
-			viper.GetString("database.host"),
-			viper.GetInt("database.port"),
-			viper.GetString("database.user"),
-			viper.GetString("database.dbname"),
-			viper.GetString("database.sslmode"),
-		)
-	} else {
-		dbURL = fmt.Sprintf(
-			"host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
-			viper.GetString("database.host"),
-			viper.GetInt("database.port"),
-			viper.GetString("database.user"),
-			password,
-			viper.GetString("database.dbname"),
-			viper.GetString("database.sslmode"),
-		)
-	}
-
-	log.Printf("Database URL: %s", dbURL)
-
-	return &Config{
-		DatabaseURL:          dbURL,
-		BlueskyHandle:        viper.GetString("bluesky.handle"),
-		BlueskyPassword:      viper.GetString("bluesky.password"),
-		PollingInterval:      time.Duration(viper.GetInt("polling.interval_minutes")) * time.Minute,
-		PostsPerPage:         viper.GetInt("polling.posts_per_page"),
-		MaxConcurrent:        viper.GetInt("polling.max_concurrent"),
-		RateLimitMS:          viper.GetInt("polling.rate_limit_ms"),
-		InitialLookbackHours: viper.GetInt("polling.initial_lookback_hours"),
-		MaxRetries:           viper.GetInt("polling.max_retries"),
-		RetryBackoffMS:       viper.GetInt("polling.retry_backoff_ms"),
-		MaxPagesPerUser:      viper.GetInt("polling.max_pages_per_user"),
-	}, nil
 }
 
 // Poll fetches new posts from all followed accounts
@@ -150,7 +84,7 @@ func (p *Poller) Poll() {
 
 	// Poll each account concurrently
 	var wg sync.WaitGroup
-	semaphore := make(chan struct{}, p.config.MaxConcurrent)
+	semaphore := make(chan struct{}, p.config.Polling.MaxConcurrent)
 
 	for _, handle := range follows {
 		wg.Add(1)
@@ -164,7 +98,7 @@ func (p *Poller) Poll() {
 			p.pollAccount(h)
 
 			// Rate limiting
-			time.Sleep(time.Duration(p.config.RateLimitMS) * time.Millisecond)
+			time.Sleep(time.Duration(p.config.Polling.RateLimitMs) * time.Millisecond)
 		}(handle)
 	}
 
@@ -206,21 +140,21 @@ func (p *Poller) pollAccount(handle string) {
 
 // pollAccountInitial performs initial 24-hour ingestion for a user
 func (p *Poller) pollAccountInitial(handle string) error {
-	lookbackPeriod := time.Duration(p.config.InitialLookbackHours) * time.Hour
+	lookbackPeriod := time.Duration(p.config.Polling.InitialLookbackHours) * time.Hour
 	cutoffTime := time.Now().Add(-lookbackPeriod)
 
-	log.Printf("[INITIAL] %s: Fetching last %d hours of posts", handle, p.config.InitialLookbackHours)
+	log.Printf("[INITIAL] %s: Fetching last %d hours of posts", handle, p.config.Polling.InitialLookbackHours)
 
 	cursor := ""
 	totalPosts := 0
 	totalURLs := 0
 	pageCount := 0
 
-	for pageCount < p.config.MaxPagesPerUser {
+	for pageCount < p.config.Polling.MaxPagesPerUser {
 		pageCount++
 
 		// Fetch with retry logic
-		feed, err := p.fetchWithRetry(handle, cursor, p.config.PostsPerPage)
+		feed, err := p.fetchWithRetry(handle, cursor, p.config.Polling.PostsPerPage)
 		if err != nil {
 			log.Printf("[INITIAL] %s: Failed after retries on page %d: %v", handle, pageCount, err)
 			return err
@@ -248,7 +182,7 @@ func (p *Poller) pollAccountInitial(handle string) error {
 		// Check oldest post
 		oldestPost := feed.Feed[len(feed.Feed)-1]
 		if oldestPost.Post.Record.CreatedAt.Before(cutoffTime) {
-			log.Printf("[INITIAL] %s: Reached %d hour cutoff at page %d", handle, p.config.InitialLookbackHours, pageCount)
+			log.Printf("[INITIAL] %s: Reached %d hour cutoff at page %d", handle, p.config.Polling.InitialLookbackHours, pageCount)
 			break
 		}
 
@@ -257,7 +191,7 @@ func (p *Poller) pollAccountInitial(handle string) error {
 		}
 
 		// Rate limiting
-		time.Sleep(time.Duration(p.config.RateLimitMS) * time.Millisecond)
+		time.Sleep(time.Duration(p.config.Polling.RateLimitMs) * time.Millisecond)
 	}
 
 	// Save cursor for future polls
@@ -271,8 +205,8 @@ func (p *Poller) pollAccountInitial(handle string) error {
 
 // pollAccountRegular performs regular polling with gap detection
 func (p *Poller) pollAccountRegular(handle string, lastCursor string) error {
-	pollingWindow := p.config.PollingInterval
-	cutoffTime := time.Now().Add(-pollingWindow)
+	pollingInterval := time.Duration(p.config.Polling.IntervalMinutes) * time.Minute
+	cutoffTime := time.Now().Add(-pollingInterval)
 
 	cursor := lastCursor
 	totalPosts := 0
@@ -282,7 +216,7 @@ func (p *Poller) pollAccountRegular(handle string, lastCursor string) error {
 	for pageCount < 10 { // Reasonable limit for regular polling
 		pageCount++
 
-		feed, err := p.fetchWithRetry(handle, cursor, p.config.PostsPerPage)
+		feed, err := p.fetchWithRetry(handle, cursor, p.config.Polling.PostsPerPage)
 		if err != nil {
 			log.Printf("[POLL] %s: Error on page %d: %v", handle, pageCount, err)
 			return err
@@ -316,7 +250,7 @@ func (p *Poller) pollAccountRegular(handle string, lastCursor string) error {
 		}
 
 		cursor = feed.Cursor
-		time.Sleep(time.Duration(p.config.RateLimitMS) * time.Millisecond)
+		time.Sleep(time.Duration(p.config.Polling.RateLimitMs) * time.Millisecond)
 	}
 
 	if pageCount > 1 {
@@ -332,9 +266,9 @@ func (p *Poller) fetchWithRetry(handle, cursor string, limit int) (*bluesky.Feed
 	var feed *bluesky.FeedResponse
 	var err error
 
-	backoff := time.Duration(p.config.RetryBackoffMS) * time.Millisecond
+	backoff := time.Duration(p.config.Polling.RetryBackoffMs) * time.Millisecond
 
-	for attempt := 0; attempt <= p.config.MaxRetries; attempt++ {
+	for attempt := 0; attempt <= p.config.Polling.MaxRetries; attempt++ {
 		feed, err = p.bskyClient.GetAuthorFeed(handle, cursor, limit)
 
 		if err == nil {
@@ -346,14 +280,14 @@ func (p *Poller) fetchWithRetry(handle, cursor string, limit int) (*bluesky.Feed
 			return nil, err
 		}
 
-		if attempt < p.config.MaxRetries {
+		if attempt < p.config.Polling.MaxRetries {
 			delay := backoff * time.Duration(1<<attempt) // Exponential: 1s, 2s, 4s
 			log.Printf("[RETRY] %s: Attempt %d failed, retrying in %v: %v", handle, attempt+1, delay, err)
 			time.Sleep(delay)
 		}
 	}
 
-	return nil, fmt.Errorf("failed after %d retries: %w", p.config.MaxRetries, err)
+	return nil, fmt.Errorf("failed after %d retries: %w", p.config.Polling.MaxRetries, err)
 }
 
 // isPermanentError checks if an API error is permanent and shouldn't be retried
@@ -365,10 +299,10 @@ func isPermanentError(err error) bool {
 	errStr := err.Error()
 	// Check for HTTP status codes that indicate permanent failures
 	return strings.Contains(errStr, "API error: 400") || // Bad Request (invalid handle)
-		strings.Contains(errStr, "API error: 401") ||    // Unauthorized
-		strings.Contains(errStr, "API error: 403") ||    // Forbidden
-		strings.Contains(errStr, "API error: 404") ||    // Not Found
-		strings.Contains(errStr, "API error: 410")       // Gone
+		strings.Contains(errStr, "API error: 401") || // Unauthorized
+		strings.Contains(errStr, "API error: 403") || // Forbidden
+		strings.Contains(errStr, "API error: 404") || // Not Found
+		strings.Contains(errStr, "API error: 410") // Gone
 }
 
 // processPost extracts URLs and stores the post, returns number of URLs found

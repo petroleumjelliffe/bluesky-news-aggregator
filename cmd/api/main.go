@@ -7,28 +7,24 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"sync"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
-	"github.com/spf13/viper"
 	"github.com/petroleumjelliffe/bluesky-news-aggregator/internal/aggregator"
+	"github.com/petroleumjelliffe/bluesky-news-aggregator/internal/config"
 	"github.com/petroleumjelliffe/bluesky-news-aggregator/internal/database"
 )
 
 var templates *template.Template
-
-// Config holds application configuration
-type Config struct {
-	DatabaseURL string
-	ServerHost  string
-	ServerPort  int
-}
 
 // Server wraps the HTTP server
 type Server struct {
 	db         *database.DB
 	aggregator *aggregator.Aggregator
 	router     *chi.Mux
+	config     *config.Config
 }
 
 // TrendingResponse is the API response for trending links
@@ -50,8 +46,8 @@ type LinkResponse struct {
 }
 
 func main() {
-	// Load configuration
-	config, err := loadConfig()
+	// Load configuration (supports env vars)
+	cfg, err := config.Load()
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}
@@ -59,8 +55,9 @@ func main() {
 	// Load templates
 	templates = template.Must(template.ParseGlob("cmd/api/templates/*.html"))
 
-	// Initialize database
-	db, err := database.NewDB(config.DatabaseURL)
+	// Initialize database (log safe connection string without password)
+	log.Printf("Connecting to database: %s", cfg.Database.DatabaseConnStringSafe())
+	db, err := database.NewDB(cfg.Database.DatabaseConnString())
 	if err != nil {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
@@ -74,65 +71,38 @@ func main() {
 		db:         db,
 		aggregator: agg,
 		router:     chi.NewRouter(),
+		config:     cfg,
 	}
 
 	server.setupRoutes()
 
-	addr := fmt.Sprintf("%s:%d", config.ServerHost, config.ServerPort)
-	log.Printf("Starting API server on %s", addr)
+	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
 
-	if err := http.ListenAndServe(addr, server.router); err != nil {
-		log.Fatalf("Server failed: %v", err)
-	}
-}
-
-func loadConfig() (*Config, error) {
-	viper.SetConfigName("config")
-	viper.SetConfigType("yaml")
-	viper.AddConfigPath("./config")
-	viper.AddConfigPath(".")
-
-	if err := viper.ReadInConfig(); err != nil {
-		return nil, err
-	}
-
-	// Build connection string, handling empty password
-	password := viper.GetString("database.password")
-	var dbURL string
-	if password == "" {
-		dbURL = fmt.Sprintf(
-			"host=%s port=%d user=%s dbname=%s sslmode=%s",
-			viper.GetString("database.host"),
-			viper.GetInt("database.port"),
-			viper.GetString("database.user"),
-			viper.GetString("database.dbname"),
-			viper.GetString("database.sslmode"),
-		)
+	// Start server with or without TLS
+	if cfg.Server.IsTLSEnabled() {
+		log.Printf("Starting HTTPS server on %s", addr)
+		if err := http.ListenAndServeTLS(addr, cfg.Server.TLSCertFile, cfg.Server.TLSKeyFile, server.router); err != nil {
+			log.Fatalf("Server failed: %v", err)
+		}
 	} else {
-		dbURL = fmt.Sprintf(
-			"host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
-			viper.GetString("database.host"),
-			viper.GetInt("database.port"),
-			viper.GetString("database.user"),
-			password,
-			viper.GetString("database.dbname"),
-			viper.GetString("database.sslmode"),
-		)
+		log.Printf("Starting HTTP server on %s (TLS not configured)", addr)
+		if err := http.ListenAndServe(addr, server.router); err != nil {
+			log.Fatalf("Server failed: %v", err)
+		}
 	}
-
-	return &Config{
-		DatabaseURL: dbURL,
-		ServerHost:  viper.GetString("server.host"),
-		ServerPort:  viper.GetInt("server.port"),
-	}, nil
 }
 
 func (s *Server) setupRoutes() {
-	// Middleware
+	// Middleware stack (order matters)
+	s.router.Use(middleware.RequestID)
+	s.router.Use(middleware.RealIP)
 	s.router.Use(middleware.Logger)
 	s.router.Use(middleware.Recoverer)
-	s.router.Use(middleware.RequestID)
-	s.router.Use(corsMiddleware)
+
+	// Security middleware
+	s.router.Use(s.securityHeadersMiddleware)
+	s.router.Use(s.corsMiddleware)
+	s.router.Use(s.rateLimitMiddleware)
 
 	// Static files
 	fileServer := http.FileServer(http.Dir("cmd/api/static"))
@@ -152,8 +122,8 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := templates.ExecuteTemplate(w, "index.html", data); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
 		log.Printf("Template error: %v", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
 	}
 }
 
@@ -222,16 +192,136 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 }
 
-func corsMiddleware(next http.Handler) http.Handler {
+// securityHeadersMiddleware adds security headers to all responses
+func (s *Server) securityHeadersMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		// Prevent MIME type sniffing
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+
+		// Prevent clickjacking
+		w.Header().Set("X-Frame-Options", "DENY")
+
+		// XSS protection (legacy but still useful)
+		w.Header().Set("X-XSS-Protection", "1; mode=block")
+
+		// Referrer policy
+		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
+
+		// Content Security Policy (adjust as needed for your frontend)
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' https: data:; connect-src 'self'")
+
+		// HSTS (only if TLS is enabled)
+		if s.config.Server.IsTLSEnabled() {
+			w.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
+// corsMiddleware handles CORS with configurable allowed origins
+func (s *Server) corsMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		origin := s.config.Server.CORSAllowOrigin
+
+		// If specific origin is configured, validate it
+		if origin != "*" {
+			// Check if request origin matches allowed origin
+			requestOrigin := r.Header.Get("Origin")
+			if requestOrigin != "" && requestOrigin != origin {
+				// Origin not allowed - don't set CORS headers
+				next.ServeHTTP(w, r)
+				return
+			}
+		}
+
+		w.Header().Set("Access-Control-Allow-Origin", origin)
+		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		w.Header().Set("Access-Control-Max-Age", "86400") // 24 hours
 
 		if r.Method == "OPTIONS" {
 			w.WriteHeader(http.StatusOK)
 			return
 		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
+// rateLimitMiddleware implements simple IP-based rate limiting
+func (s *Server) rateLimitMiddleware(next http.Handler) http.Handler {
+	// Simple in-memory rate limiter
+	type visitor struct {
+		count    int
+		lastSeen time.Time
+	}
+
+	var (
+		visitors = make(map[string]*visitor)
+		mu       sync.Mutex
+	)
+
+	// Cleanup old entries periodically
+	go func() {
+		for {
+			time.Sleep(time.Minute)
+			mu.Lock()
+			for ip, v := range visitors {
+				if time.Since(v.lastSeen) > time.Minute {
+					delete(visitors, ip)
+				}
+			}
+			mu.Unlock()
+		}
+	}()
+
+	limitPerMinute := s.config.Server.RateLimitRPM
+	if limitPerMinute == 0 {
+		limitPerMinute = 100 // Default
+	}
+
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Skip rate limiting for health checks
+		if r.URL.Path == "/health" {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		ip := r.RemoteAddr
+		// Use X-Forwarded-For if behind proxy
+		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+			ip = xff
+		}
+
+		mu.Lock()
+		v, exists := visitors[ip]
+		if !exists {
+			visitors[ip] = &visitor{count: 1, lastSeen: time.Now()}
+			mu.Unlock()
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// Reset count if more than a minute has passed
+		if time.Since(v.lastSeen) > time.Minute {
+			v.count = 1
+			v.lastSeen = time.Now()
+			mu.Unlock()
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		v.count++
+		v.lastSeen = time.Now()
+
+		if v.count > limitPerMinute {
+			mu.Unlock()
+			w.Header().Set("Retry-After", "60")
+			http.Error(w, "Rate limit exceeded", http.StatusTooManyRequests)
+			return
+		}
+		mu.Unlock()
 
 		next.ServeHTTP(w, r)
 	})

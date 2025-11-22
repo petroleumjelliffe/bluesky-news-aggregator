@@ -1,18 +1,39 @@
+# Bluesky News Aggregator Configuration
+#
+# SECURITY WARNING:
+# - NEVER commit config.yaml with real credentials to git
+# - Use environment variables for ALL secrets in production
+# - Environment variables override these settings (see .env.example)
+#
+# Environment variable mapping:
+#   database.password -> DB_PASSWORD
+#   bluesky.password  -> BLUESKY_PASSWORD
+#   server.cors_origin -> CORS_ALLOW_ORIGIN
+#   etc. (see .env.example for full list)
+
 database:
   host: localhost
   port: 5432
   user: postgres
-  password: yourpassword
+  password: ""  # USE DB_PASSWORD env var in production!
   dbname: bluesky_news
-  sslmode: disable
+  sslmode: disable  # Use 'require' in production!
 
 bluesky:
   handle: your.handle.bsky.social
-  password: your-app-password  # Generate at https://bsky.app/settings/app-passwords
+  password: ""  # USE BLUESKY_PASSWORD env var in production!
+                # Generate app passwords at https://bsky.app/settings/app-passwords
 
 server:
-  port: 8080
   host: 0.0.0.0
+  port: 8080
+  # TLS configuration (optional - for HTTPS)
+  # tls_cert: /path/to/cert.pem
+  # tls_key: /path/to/key.pem
+  # CORS allowed origin (use specific domain in production)
+  cors_origin: "*"  # CHANGE to specific domain in production!
+  # Rate limiting (requests per minute per IP)
+  rate_limit_rpm: 100
 
 polling:
   interval_minutes: 15

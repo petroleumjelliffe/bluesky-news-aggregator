@@ -7,49 +7,37 @@ import (
 	"time"
 
 	"github.com/petroleumjelliffe/bluesky-news-aggregator/internal/bluesky"
+	"github.com/petroleumjelliffe/bluesky-news-aggregator/internal/config"
 	"github.com/petroleumjelliffe/bluesky-news-aggregator/internal/database"
 	"github.com/petroleumjelliffe/bluesky-news-aggregator/internal/processor"
 	"github.com/petroleumjelliffe/bluesky-news-aggregator/internal/urlutil"
-	"github.com/spf13/viper"
 )
-
-// Config holds backfill configuration
-type Config struct {
-	DatabaseURL          string
-	BlueskyHandle        string
-	BlueskyPassword      string
-	MaxConcurrent        int
-	RateLimitMS          int
-	LookbackHours        int
-	MaxPagesPerUser      int
-	MaxRetries           int
-	RetryBackoffMS       int
-}
 
 // Backfiller handles backfilling historical posts for followed accounts
 type Backfiller struct {
 	db         *database.DB
 	bskyClient *bluesky.Client
 	processor  *processor.Processor
-	config     *Config
+	config     *config.Config
 }
 
 func main() {
-	// Load configuration
-	config, err := loadConfig()
+	// Load configuration (supports env vars)
+	cfg, err := config.Load()
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}
 
-	// Initialize database
-	db, err := database.NewDB(config.DatabaseURL)
+	// Initialize database (log safe connection string without password)
+	log.Printf("[INFO] Connecting to database: %s", cfg.Database.DatabaseConnStringSafe())
+	db, err := database.NewDB(cfg.Database.DatabaseConnString())
 	if err != nil {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
 	defer db.Close()
 
 	// Initialize Bluesky client (for API-based backfill)
-	bskyClient, err := bluesky.NewClient(config.BlueskyHandle, config.BlueskyPassword)
+	bskyClient, err := bluesky.NewClient(cfg.Bluesky.Handle, cfg.Bluesky.Password)
 	if err != nil {
 		log.Fatalf("Failed to create Bluesky client: %v", err)
 	}
@@ -59,7 +47,7 @@ func main() {
 		db:         db,
 		bskyClient: bskyClient,
 		processor:  processor.NewProcessor(db),
-		config:     config,
+		config:     cfg,
 	}
 
 	log.Printf("[INFO] Starting backfill for accounts without completed backfill...")
@@ -91,57 +79,10 @@ func main() {
 	log.Printf("[INFO] Backfill complete!")
 }
 
-func loadConfig() (*Config, error) {
-	viper.SetConfigName("config")
-	viper.SetConfigType("yaml")
-	viper.AddConfigPath("./config")
-	viper.AddConfigPath(".")
-
-	if err := viper.ReadInConfig(); err != nil {
-		return nil, err
-	}
-
-	// Build connection string, handling empty password
-	password := viper.GetString("database.password")
-	var dbURL string
-	if password == "" {
-		dbURL = fmt.Sprintf(
-			"host=%s port=%d user=%s dbname=%s sslmode=%s",
-			viper.GetString("database.host"),
-			viper.GetInt("database.port"),
-			viper.GetString("database.user"),
-			viper.GetString("database.dbname"),
-			viper.GetString("database.sslmode"),
-		)
-	} else {
-		dbURL = fmt.Sprintf(
-			"host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
-			viper.GetString("database.host"),
-			viper.GetInt("database.port"),
-			viper.GetString("database.user"),
-			password,
-			viper.GetString("database.dbname"),
-			viper.GetString("database.sslmode"),
-		)
-	}
-
-	return &Config{
-		DatabaseURL:     dbURL,
-		BlueskyHandle:   viper.GetString("bluesky.handle"),
-		BlueskyPassword: viper.GetString("bluesky.password"),
-		MaxConcurrent:   viper.GetInt("polling.max_concurrent"),
-		RateLimitMS:     viper.GetInt("polling.rate_limit_ms"),
-		LookbackHours:   viper.GetInt("polling.initial_lookback_hours"),
-		MaxPagesPerUser: viper.GetInt("polling.max_pages_per_user"),
-		MaxRetries:      viper.GetInt("polling.max_retries"),
-		RetryBackoffMS:  viper.GetInt("polling.retry_backoff_ms"),
-	}, nil
-}
-
 // backfillAccounts backfills multiple accounts concurrently
 func (b *Backfiller) backfillAccounts(follows []database.Follow) {
 	var wg sync.WaitGroup
-	semaphore := make(chan struct{}, b.config.MaxConcurrent)
+	semaphore := make(chan struct{}, b.config.Polling.MaxConcurrent)
 
 	successCount := 0
 	failureCount := 0
@@ -168,7 +109,7 @@ func (b *Backfiller) backfillAccounts(follows []database.Follow) {
 			mu.Unlock()
 
 			// Rate limiting
-			time.Sleep(time.Duration(b.config.RateLimitMS) * time.Millisecond)
+			time.Sleep(time.Duration(b.config.Polling.RateLimitMs) * time.Millisecond)
 		}(follow)
 	}
 
@@ -179,17 +120,17 @@ func (b *Backfiller) backfillAccounts(follows []database.Follow) {
 
 // backfillAccount backfills posts for a single account
 func (b *Backfiller) backfillAccount(follow database.Follow) error {
-	lookbackPeriod := time.Duration(b.config.LookbackHours) * time.Hour
+	lookbackPeriod := time.Duration(b.config.Polling.InitialLookbackHours) * time.Hour
 	cutoffTime := time.Now().Add(-lookbackPeriod)
 
-	log.Printf("[BACKFILL] %s: Fetching last %d hours of posts", follow.Handle, b.config.LookbackHours)
+	log.Printf("[BACKFILL] %s: Fetching last %d hours of posts", follow.Handle, b.config.Polling.InitialLookbackHours)
 
 	cursor := ""
 	totalPosts := 0
 	totalURLs := 0
 	pageCount := 0
 
-	for pageCount < b.config.MaxPagesPerUser {
+	for pageCount < b.config.Polling.MaxPagesPerUser {
 		pageCount++
 
 		// Fetch with retry logic
@@ -215,7 +156,7 @@ func (b *Backfiller) backfillAccount(follow database.Follow) error {
 		// Check oldest post
 		oldestPost := feed.Feed[len(feed.Feed)-1]
 		if oldestPost.Post.Record.CreatedAt.Before(cutoffTime) {
-			log.Printf("[BACKFILL] %s: Reached %d hour cutoff at page %d", follow.Handle, b.config.LookbackHours, pageCount)
+			log.Printf("[BACKFILL] %s: Reached %d hour cutoff at page %d", follow.Handle, b.config.Polling.InitialLookbackHours, pageCount)
 			break
 		}
 
@@ -226,7 +167,7 @@ func (b *Backfiller) backfillAccount(follow database.Follow) error {
 		cursor = feed.Cursor
 
 		// Rate limiting between pages
-		time.Sleep(time.Duration(b.config.RateLimitMS) * time.Millisecond)
+		time.Sleep(time.Duration(b.config.Polling.RateLimitMs) * time.Millisecond)
 	}
 
 	// Mark backfill as completed
@@ -243,23 +184,23 @@ func (b *Backfiller) fetchWithRetry(handle, cursor string, limit int) (*bluesky.
 	var feed *bluesky.FeedResponse
 	var err error
 
-	backoff := time.Duration(b.config.RetryBackoffMS) * time.Millisecond
+	backoff := time.Duration(b.config.Polling.RetryBackoffMs) * time.Millisecond
 
-	for attempt := 0; attempt <= b.config.MaxRetries; attempt++ {
+	for attempt := 0; attempt <= b.config.Polling.MaxRetries; attempt++ {
 		feed, err = b.bskyClient.GetAuthorFeed(handle, cursor, limit)
 
 		if err == nil {
 			return feed, nil
 		}
 
-		if attempt < b.config.MaxRetries {
+		if attempt < b.config.Polling.MaxRetries {
 			delay := backoff * time.Duration(1<<attempt) // Exponential: 1s, 2s, 4s
 			log.Printf("[RETRY] %s: Attempt %d failed, retrying in %v: %v", handle, attempt+1, delay, err)
 			time.Sleep(delay)
 		}
 	}
 
-	return nil, fmt.Errorf("failed after %d retries: %w", b.config.MaxRetries, err)
+	return nil, fmt.Errorf("failed after %d retries: %w", b.config.Polling.MaxRetries, err)
 }
 
 // processPost processes a single post from the API and stores it
