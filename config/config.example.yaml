@@ -29,3 +29,21 @@ polling:
 aggregation:
   default_hours: 24
   max_results: 100
+
+# Database cleanup and maintenance
+cleanup:
+  # Data retention period (hours)
+  # Posts and links older than this are deleted
+  retention_hours: 24
+
+  # Periodic cleanup interval (minutes)
+  # How often to run cleanup while services are running
+  cleanup_interval_minutes: 60
+
+  # Trending link threshold
+  # Links with this many shares are kept regardless of age
+  trending_threshold: 5
+
+  # Cursor update interval (seconds)
+  # How often to flush cursor to database (reduces write pressure)
+  cursor_update_seconds: 10

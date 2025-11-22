@@ -304,3 +304,89 @@ func (db *DB) GetLinkSharers(linkID int) ([]SharerAvatar, error) {
 	err := db.Select(&sharers, query, linkID)
 	return sharers, err
 }
+
+// DeleteOldPosts deletes posts older than the given cutoff time
+// Returns the number of posts deleted
+func (db *DB) DeleteOldPosts(cutoff time.Time) (int, error) {
+	query := `
+		DELETE FROM posts
+		WHERE created_at < $1
+	`
+
+	result, err := db.Exec(query, cutoff)
+	if err != nil {
+		return 0, err
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+
+	return int(rowsAffected), nil
+}
+
+// DeleteOrphanedPostLinks removes post_links entries that reference non-existent posts or links
+// This is a safety cleanup in case cascading deletes don't work properly
+func (db *DB) DeleteOrphanedPostLinks() (int, error) {
+	query := `
+		DELETE FROM post_links
+		WHERE post_id NOT IN (SELECT id FROM posts)
+		   OR link_id NOT IN (SELECT id FROM links)
+	`
+
+	result, err := db.Exec(query)
+	if err != nil {
+		return 0, err
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+
+	return int(rowsAffected), nil
+}
+
+// DeleteUnsharedLinks deletes links that have no shares since the cutoff time
+// EXCEPT: Keeps trending links (5+ total shares regardless of age)
+func (db *DB) DeleteUnsharedLinks(cutoff time.Time, trendingThreshold int) (int, error) {
+	query := `
+		DELETE FROM links
+		WHERE id IN (
+			SELECT l.id
+			FROM links l
+			LEFT JOIN post_links pl ON l.id = pl.link_id
+			LEFT JOIN posts p ON pl.post_id = p.id
+			GROUP BY l.id
+			HAVING COALESCE(MAX(p.created_at), '1970-01-01'::timestamp) < $1
+			   AND COUNT(pl.link_id) < $2
+		)
+	`
+
+	result, err := db.Exec(query, cutoff, trendingThreshold)
+	if err != nil {
+		return 0, err
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+
+	return int(rowsAffected), nil
+}
+
+// GetActiveFollows returns follows that have been seen within the specified duration
+func (db *DB) GetActiveFollows(maxAge time.Duration) ([]Follow, error) {
+	query := `
+		SELECT did, handle, display_name, avatar_url, added_at, last_seen_at, backfill_completed
+		FROM follows
+		WHERE last_seen_at > NOW() - $1
+		ORDER BY last_seen_at DESC
+	`
+
+	var follows []Follow
+	err := db.Select(&follows, query, maxAge)
+	return follows, err
+}
