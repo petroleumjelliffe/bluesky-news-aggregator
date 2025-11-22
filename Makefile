@@ -105,12 +105,12 @@ logs-api:
 # Backfill management
 backfill-recent:
 	@echo "Running backfill for accounts active in last 24 hours..."
-	@psql -d bluesky_news -c "UPDATE follows SET backfill_completed = false, last_backfill = NULL WHERE last_seen_at > NOW() - INTERVAL '24 hours';"
+	@psql -d bluesky_news -c "UPDATE follows SET backfill_completed = false WHERE last_seen_at > NOW() - INTERVAL '24 hours';"
 	@./bin/backfill
 
 backfill-all:
 	@echo "Running full backfill for all accounts..."
-	@psql -d bluesky_news -c "UPDATE follows SET backfill_completed = false, last_backfill = NULL;"
+	@psql -d bluesky_news -c "UPDATE follows SET backfill_completed = false;"
 	@./bin/backfill
 
 # Follow migration (fetches DIDs and avatars from Bluesky API)
