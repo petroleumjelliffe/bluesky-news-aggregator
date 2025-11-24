@@ -19,6 +19,8 @@ type DB struct {
 type Post struct {
 	ID           string    `db:"id"`
 	AuthorHandle string    `db:"author_handle"`
+	AuthorDID    string    `db:"author_did"`
+	AuthorDegree int       `db:"author_degree"`
 	Content      string    `db:"content"`
 	CreatedAt    time.Time `db:"created_at"`
 	IndexedAt    time.Time `db:"indexed_at"`
@@ -92,12 +94,12 @@ func NewDB(connectionString string) (*DB, error) {
 // InsertPost inserts a new post into the database
 func (db *DB) InsertPost(post *Post) error {
 	query := `
-		INSERT INTO posts (id, author_handle, content, created_at)
-		VALUES ($1, $2, $3, $4)
+		INSERT INTO posts (id, author_handle, author_did, author_degree, content, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6)
 		ON CONFLICT (id) DO NOTHING
 	`
 
-	_, err := db.Exec(query, post.ID, post.AuthorHandle, post.Content, post.CreatedAt)
+	_, err := db.Exec(query, post.ID, post.AuthorHandle, post.AuthorDID, post.AuthorDegree, post.Content, post.CreatedAt)
 	return err
 }
 
@@ -161,11 +163,11 @@ func (db *DB) GetTrendingLinks(hoursBack int, limit int) ([]TrendingLink, error)
 			l.og_image_url,
 			COUNT(DISTINCT pl.post_id) as share_count,
 			MAX(p.created_at) as last_shared_at,
-			ARRAY_AGG(DISTINCT COALESCE(f.handle, p.author_handle)) as sharers
+			ARRAY_AGG(DISTINCT COALESCE(n.handle, p.author_handle)) as sharers
 		FROM links l
 		JOIN post_links pl ON l.id = pl.link_id
 		JOIN posts p ON pl.post_id = p.id
-		LEFT JOIN follows f ON p.author_handle = f.did
+		LEFT JOIN network_accounts n ON p.author_did = n.did
 		WHERE p.created_at > NOW() - INTERVAL '1 hour' * $1
 		GROUP BY l.id
 		ORDER BY share_count DESC, last_shared_at DESC
@@ -174,6 +176,36 @@ func (db *DB) GetTrendingLinks(hoursBack int, limit int) ([]TrendingLink, error)
 
 	var links []TrendingLink
 	err := db.Select(&links, query, hoursBack, limit)
+	return links, err
+}
+
+// GetTrendingLinksByDegree retrieves trending links filtered by network degree
+// degree: 0 = all posts, 1 = 1st-degree only, 2 = 2nd-degree only
+func (db *DB) GetTrendingLinksByDegree(hoursBack int, limit int, degree int) ([]TrendingLink, error) {
+	query := `
+		SELECT
+			l.id,
+			l.normalized_url,
+			l.original_url,
+			l.title,
+			l.description,
+			l.og_image_url,
+			COUNT(DISTINCT pl.post_id) as share_count,
+			MAX(p.created_at) as last_shared_at,
+			ARRAY_AGG(DISTINCT COALESCE(n.handle, p.author_handle)) as sharers
+		FROM links l
+		JOIN post_links pl ON l.id = pl.link_id
+		JOIN posts p ON pl.post_id = p.id
+		LEFT JOIN network_accounts n ON p.author_did = n.did
+		WHERE p.created_at > NOW() - INTERVAL '1 hour' * $1
+		  AND ($3 = 0 OR p.author_degree = $3)
+		GROUP BY l.id
+		ORDER BY share_count DESC, last_shared_at DESC
+		LIMIT $2
+	`
+
+	var links []TrendingLink
+	err := db.Select(&links, query, hoursBack, limit, degree)
 	return links, err
 }
 
@@ -286,13 +318,13 @@ func (db *DB) UpdateJetstreamCursor(cursorTimeUS int64) error {
 func (db *DB) GetLinkSharers(linkID int) ([]SharerAvatar, error) {
 	query := `
 		SELECT DISTINCT
-			COALESCE(f.handle, p.author_handle) as handle,
-			f.display_name,
-			f.avatar_url,
-			COALESCE(f.did, p.author_handle) as did
+			COALESCE(n.handle, p.author_handle) as handle,
+			n.display_name,
+			n.avatar_url,
+			COALESCE(n.did, p.author_handle) as did
 		FROM post_links pl
 		JOIN posts p ON pl.post_id = p.id
-		LEFT JOIN follows f ON p.author_handle = f.did
+		LEFT JOIN network_accounts n ON p.author_did = n.did
 		WHERE pl.link_id = $1
 		ORDER BY handle
 	`

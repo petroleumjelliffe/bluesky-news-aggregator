@@ -42,6 +42,7 @@ END;
 $$ LANGUAGE plpgsql;
 
 -- Trigger to auto-update timestamp
+DROP TRIGGER IF EXISTS network_accounts_updated_at_trigger ON network_accounts;
 CREATE TRIGGER network_accounts_updated_at_trigger
     BEFORE UPDATE ON network_accounts
     FOR EACH ROW

@@ -31,14 +31,20 @@ import (
 	"github.com/petroleumjelliffe/bluesky-news-aggregator/internal/urlutil"
 )
 
+// DIDManager interface for looking up network degrees
+type DIDManager interface {
+	GetDegree(did string) int
+}
+
 // Processor handles processing of Jetstream events into the database.
 //
 // This is the SINGLE processing pipeline used by both:
 //   - cmd/firehose (real-time Jetstream events)
 //   - cmd/backfill (historical Bluesky API data)
 type Processor struct {
-	db      *database.DB
-	scraper *scraper.Scraper
+	db         *database.DB
+	scraper    *scraper.Scraper
+	didManager DIDManager
 }
 
 // PostRecord represents the post record from Jetstream (app.bsky.feed.post)
@@ -70,10 +76,11 @@ type EmbedRecord struct {
 }
 
 // NewProcessor creates a new event processor
-func NewProcessor(db *database.DB) *Processor {
+func NewProcessor(db *database.DB, didManager DIDManager) *Processor {
 	return &Processor{
-		db:      db,
-		scraper: scraper.NewScraper(),
+		db:         db,
+		scraper:    scraper.NewScraper(),
+		didManager: didManager,
 	}
 }
 
@@ -97,11 +104,16 @@ func (p *Processor) ProcessEvent(event *models.Event) error {
 	// Build post URI (at://{did}/{collection}/{rkey})
 	postURI := fmt.Sprintf("at://%s/%s/%s", event.Did, event.Commit.Collection, event.Commit.RKey)
 
+	// Look up author's degree in the network
+	degree := p.didManager.GetDegree(event.Did)
+
 	// Store post in database (we need to resolve DID to handle)
 	// For now we'll use DID as handle since we're tracking by DID
 	dbPost := &database.Post{
 		ID:           postURI,
-		AuthorHandle: event.Did, // We'll store DID here since we have it
+		AuthorHandle: event.Did,   // We'll store DID here since we have it
+		AuthorDID:    event.Did,   // Store DID explicitly
+		AuthorDegree: degree,      // Store network degree (1, 2, or 0)
 		Content:      postRecord.Text,
 		CreatedAt:    postRecord.CreatedAt,
 	}
