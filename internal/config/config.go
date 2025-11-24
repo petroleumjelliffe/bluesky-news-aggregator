@@ -4,9 +4,11 @@ package config
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"strings"
 
+	"github.com/joho/godotenv"
 	"github.com/spf13/viper"
 )
 
@@ -69,6 +71,13 @@ type CleanupConfig struct {
 // Environment variables take precedence over config file values.
 // Sensitive values (passwords) should ONLY be set via environment variables in production.
 func Load() (*Config, error) {
+	// Load .env file if it exists, overriding any existing environment variables
+	// This ensures .env values take precedence over shell exports
+	if err := godotenv.Overload(); err != nil {
+		// .env file is optional - only log if it's a real error (not just missing file)
+		log.Printf("[DEBUG] No .env file found or error loading: %v", err)
+	}
+
 	// Set up viper
 	viper.SetConfigName("config")
 	viper.SetConfigType("yaml")
