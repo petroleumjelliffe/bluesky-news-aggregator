@@ -2,6 +2,7 @@ package database
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -385,4 +386,112 @@ func (db *DB) GetActiveFollows(maxAge time.Duration) ([]Follow, error) {
 	var follows []Follow
 	err := db.Select(&follows, query, maxAge)
 	return follows, err
+}
+
+// NetworkAccount represents an account in the extended network (1st or 2nd degree)
+type NetworkAccount struct {
+	DID            string    `db:"did" json:"did"`
+	Handle         string    `db:"handle" json:"handle"`
+	DisplayName    *string   `db:"display_name" json:"display_name"`
+	AvatarURL      *string   `db:"avatar_url" json:"avatar_url"`
+	Degree         int       `db:"degree" json:"degree"`
+	SourceCount    int       `db:"source_count" json:"source_count"`
+	SourceDIDs     *string   `db:"source_dids" json:"source_dids"` // JSONB stored as string
+	FirstSeenAt    time.Time `db:"first_seen_at" json:"first_seen_at"`
+	LastUpdatedAt  time.Time `db:"last_updated_at" json:"last_updated_at"`
+}
+
+// UpsertNetworkAccount inserts or updates a network account
+func (db *DB) UpsertNetworkAccount(did, handle string, displayName, avatarURL *string, degree, sourceCount int, sourceDIDs []string) error {
+	// Convert source DIDs to JSON array
+	sourceDIDsJSON, err := json.Marshal(sourceDIDs)
+	if err != nil {
+		return fmt.Errorf("failed to marshal source DIDs: %w", err)
+	}
+
+	query := `
+		INSERT INTO network_accounts (did, handle, display_name, avatar_url, degree, source_count, source_dids)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		ON CONFLICT (did) DO UPDATE SET
+			handle = EXCLUDED.handle,
+			display_name = EXCLUDED.display_name,
+			avatar_url = EXCLUDED.avatar_url,
+			degree = EXCLUDED.degree,
+			source_count = EXCLUDED.source_count,
+			source_dids = EXCLUDED.source_dids,
+			last_updated_at = CURRENT_TIMESTAMP
+	`
+
+	_, err = db.Exec(query, did, handle, displayName, avatarURL, degree, sourceCount, sourceDIDsJSON)
+	return err
+}
+
+// GetNetworkAccountsByDegree returns all network accounts of a specific degree
+// optionally filtered by minimum source count
+func (db *DB) GetNetworkAccountsByDegree(degree, minSourceCount int) ([]NetworkAccount, error) {
+	query := `
+		SELECT did, handle, display_name, avatar_url, degree, source_count, source_dids, first_seen_at, last_updated_at
+		FROM network_accounts
+		WHERE degree = $1 AND source_count >= $2
+		ORDER BY source_count DESC, last_updated_at DESC
+	`
+
+	var accounts []NetworkAccount
+	err := db.Select(&accounts, query, degree, minSourceCount)
+	return accounts, err
+}
+
+// GetAllNetworkDIDs returns a map of all DIDs in the network for efficient lookup
+// Returns map[did] -> degree
+func (db *DB) GetAllNetworkDIDs() (map[string]int, error) {
+	query := `SELECT did, degree FROM network_accounts`
+
+	rows, err := db.Query(query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	dids := make(map[string]int)
+	for rows.Next() {
+		var did string
+		var degree int
+		if err := rows.Scan(&did, &degree); err != nil {
+			return nil, err
+		}
+		dids[did] = degree
+	}
+
+	return dids, rows.Err()
+}
+
+// GetNetworkStats returns statistics about the network
+func (db *DB) GetNetworkStats() (map[string]interface{}, error) {
+	query := `
+		SELECT
+			COUNT(*) FILTER (WHERE degree = 1) as first_degree_count,
+			COUNT(*) FILTER (WHERE degree = 2) as second_degree_count,
+			COUNT(*) FILTER (WHERE degree = 2 AND source_count >= 2) as second_degree_filtered,
+			COUNT(*) FILTER (WHERE degree = 2 AND source_count >= 3) as second_degree_strong
+		FROM network_accounts
+	`
+
+	var stats struct {
+		FirstDegree         int `db:"first_degree_count"`
+		SecondDegree        int `db:"second_degree_count"`
+		SecondDegreeFiltered int `db:"second_degree_filtered"`
+		SecondDegreeStrong  int `db:"second_degree_strong"`
+	}
+
+	err := db.Get(&stats, query)
+	if err != nil {
+		return nil, err
+	}
+
+	return map[string]interface{}{
+		"first_degree":           stats.FirstDegree,
+		"second_degree":          stats.SecondDegree,
+		"second_degree_2plus":    stats.SecondDegreeFiltered,
+		"second_degree_3plus":    stats.SecondDegreeStrong,
+	}, nil
 }
