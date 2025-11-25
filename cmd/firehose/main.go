@@ -50,12 +50,18 @@ func main() {
 	}
 
 	// Create DID manager and load follows
-	didManager := didmanager.NewManager(db)
+	// Enable 2nd-degree filtering with minimum 2 sources
+	didManager := didmanager.NewManagerWithConfig(db, &didmanager.Config{
+		Include2ndDegree: true,
+		MinSourceCount:   2,
+	})
 	if err := didManager.LoadFromDatabase(); err != nil {
 		log.Fatalf("Failed to load follows: %v", err)
 	}
 
-	log.Printf("[INFO] Filtering to %d followed DIDs", didManager.Count())
+	counts := didManager.CountByDegree()
+	log.Printf("[INFO] Filtering to %d DIDs (%d 1st-degree, %d 2nd-degree)",
+		didManager.Count(), counts[1], counts[2])
 
 	// Load last cursor for crash recovery
 	savedCursor, err := db.GetJetstreamCursor()
@@ -72,8 +78,8 @@ func main() {
 	// PHASE 3: Start periodic cleanup ticker
 	maintenance.StartCleanupTicker(db, cleanupConfig)
 
-	// Create processor for handling events
-	proc := processor.NewProcessor(db)
+	// Create processor for handling events (with DID manager for degree lookup)
+	proc := processor.NewProcessor(db, didManager)
 
 	// Cursor batching variables
 	var (

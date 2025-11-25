@@ -149,8 +149,24 @@ func (s *Server) handleTrending(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get trending links
-	links, err := s.aggregator.GetTrendingLinks(hours, limit)
+	// Parse degree filter: 0 = all, 1 = 1st-degree only, 2 = 2nd-degree only
+	degreeStr := r.URL.Query().Get("degree")
+	degree := 0 // Default: all posts
+	if degreeStr != "" {
+		degree, err = strconv.Atoi(degreeStr)
+		if err != nil || degree < 0 || degree > 2 {
+			http.Error(w, "Invalid degree parameter (0=all, 1=1st-degree, 2=2nd-degree)", http.StatusBadRequest)
+			return
+		}
+	}
+
+	// Get trending links (filtered by degree if specified)
+	var links []database.TrendingLink
+	if degree == 0 {
+		links, err = s.aggregator.GetTrendingLinks(hours, limit)
+	} else {
+		links, err = s.aggregator.GetTrendingLinksByDegree(hours, limit, degree)
+	}
 	if err != nil {
 		log.Printf("Error getting trending links: %v", err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)

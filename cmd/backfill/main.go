@@ -9,6 +9,7 @@ import (
 	"github.com/petroleumjelliffe/bluesky-news-aggregator/internal/bluesky"
 	"github.com/petroleumjelliffe/bluesky-news-aggregator/internal/config"
 	"github.com/petroleumjelliffe/bluesky-news-aggregator/internal/database"
+	"github.com/petroleumjelliffe/bluesky-news-aggregator/internal/didmanager"
 	"github.com/petroleumjelliffe/bluesky-news-aggregator/internal/processor"
 	"github.com/petroleumjelliffe/bluesky-news-aggregator/internal/urlutil"
 )
@@ -42,11 +43,20 @@ func main() {
 		log.Fatalf("Failed to create Bluesky client: %v", err)
 	}
 
+	// Create DID manager and load network accounts
+	didManager := didmanager.NewManagerWithConfig(db, &didmanager.Config{
+		Include2ndDegree: true,
+		MinSourceCount:   2,
+	})
+	if err := didManager.LoadFromDatabase(); err != nil {
+		log.Fatalf("Failed to load DID manager: %v", err)
+	}
+
 	// Create backfiller
 	backfiller := &Backfiller{
 		db:         db,
 		bskyClient: bskyClient,
-		processor:  processor.NewProcessor(db),
+		processor:  processor.NewProcessor(db, didManager),
 		config:     cfg,
 	}
 

@@ -14,6 +14,7 @@ type Client struct {
 	httpClient *http.Client
 	baseURL    string
 	handle     string
+	did        string
 	jwt        string
 }
 
@@ -69,7 +70,13 @@ func (c *Client) authenticate(password string) error {
 	}
 
 	c.jwt = session.AccessJWT
+	c.did = session.DID
 	return nil
+}
+
+// GetDID returns the authenticated user's DID
+func (c *Client) GetDID() string {
+	return c.did
 }
 
 // GetAuthorFeed fetches posts from a specific author
@@ -106,9 +113,24 @@ func (c *Client) GetAuthorFeed(handle string, cursor string, limit int) (*FeedRe
 	return &feedResp, nil
 }
 
-// GetFollows fetches the list of accounts that a user follows
+// GetFollows fetches the list of accounts that a user follows (handles only)
 func (c *Client) GetFollows(handle string) ([]string, error) {
-	var allFollows []string
+	follows, err := c.GetFollowsWithMetadata(handle)
+	if err != nil {
+		return nil, err
+	}
+
+	handles := make([]string, len(follows))
+	for i, follow := range follows {
+		handles[i] = follow.Handle
+	}
+
+	return handles, nil
+}
+
+// GetFollowsWithMetadata fetches the full follow objects with metadata (DID, avatar, etc.)
+func (c *Client) GetFollowsWithMetadata(handle string) ([]Follow, error) {
+	var allFollows []Follow
 	cursor := ""
 
 	for {
@@ -145,9 +167,7 @@ func (c *Client) GetFollows(handle string) ([]string, error) {
 		}
 		resp.Body.Close()
 
-		for _, follow := range followsResp.Follows {
-			allFollows = append(allFollows, follow.Handle)
-		}
+		allFollows = append(allFollows, followsResp.Follows...)
 
 		if followsResp.Cursor == "" {
 			break

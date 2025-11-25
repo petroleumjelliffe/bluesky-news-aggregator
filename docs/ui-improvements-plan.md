@@ -1,7 +1,21 @@
 # UI Improvements Plan
 
-**Status**: Planning
-**Date**: 2025-11-04
+**Status**: PARTIALLY COMPLETED
+**Date**: 2024-11-04
+**Last Updated**: 2024-11-24
+
+## Completion Status
+
+| Phase | Status | Branch/PR |
+|-------|--------|-----------|
+| Phase 1 (Quick Wins) | COMPLETED | `feature/render-github-pages-deployment` / PR #30, #31 |
+| Phase 2 (Avatars) | COMPLETED | `24-ui-phase-2-avatar-support-sharer-display` / PR #27 |
+| Phase 3 (Post Details) | NOT STARTED | - |
+| Phase 4 (Global Trending) | NOT STARTED | - |
+
+**Note**: Phases 3 & 4 have been moved to [ROADMAP.md](ROADMAP.md) under "Frontend Improvements" and "Expanded Network" respectively.
+
+---
 
 ## Overview
 
@@ -292,30 +306,23 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 
 ## Implementation Phases
 
-### Phase 1: Quick Wins (Est. 2-3 hours)
+### Phase 1: Quick Wins - COMPLETED
 1. ✅ Show domain under title (frontend only)
 2. ✅ Template refactoring (move HTML to files)
 3. ✅ Basic post expansion UI (no API yet)
 
-### Phase 2: Avatar Support (Est. 4-5 hours)
-1. Database migration (add avatar_url column)
-2. Update backfill to fetch avatars
-3. Update firehose to store avatars
-4. Modify API to return sharer avatars
-5. Frontend avatar display with overlap
+### Phase 2: Avatar Support - COMPLETED
+1. ✅ Database migration (add avatar_url column)
+2. ✅ Update backfill to fetch avatars
+3. ✅ Update firehose to store avatars
+4. ✅ Modify API to return sharer avatars
+5. ✅ Frontend avatar display with overlap
 
-### Phase 3: Post Details (Est. 5-6 hours)
-1. Create `/api/links/{id}/posts` endpoint
-2. Implement post details query
-3. Add quote post detection logic
-4. Build expandable UI with post list
-5. Add badges for quote vs repost
+### Phase 3: Post Details - MOVED TO ROADMAP
+See [ROADMAP.md](ROADMAP.md) > Frontend Improvements
 
-### Phase 4: Global Trending (Est. 6-8 hours)
-1. Implement global trending query
-2. Add caching layer (optional)
-3. Create scope toggle in UI
-4. Performance testing and optimization
+### Phase 4: Global Trending - MOVED TO ROADMAP
+See [ROADMAP.md](ROADMAP.md) > Expanded Network Reach
 
 ---
 

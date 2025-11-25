@@ -67,3 +67,15 @@ func (a *Aggregator) GetTrendingLinks(hoursBack, limit int) ([]database.Trending
 	// Apply ranking strategy
 	return a.ranker.Rank(links), nil
 }
+
+// GetTrendingLinksByDegree retrieves and ranks trending links filtered by network degree
+// degree: 0 = all posts, 1 = 1st-degree only, 2 = 2nd-degree only
+func (a *Aggregator) GetTrendingLinksByDegree(hoursBack, limit, degree int) ([]database.TrendingLink, error) {
+	links, err := a.db.GetTrendingLinksByDegree(hoursBack, limit, degree)
+	if err != nil {
+		return nil, err
+	}
+
+	// Apply ranking strategy
+	return a.ranker.Rank(links), nil
+}
