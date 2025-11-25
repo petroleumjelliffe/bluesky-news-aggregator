@@ -211,6 +211,68 @@ button:active {
     display: block;
 }
 
+.posts-list {
+    display: grid;
+    gap: 12px;
+}
+
+.post-item {
+    background: #f9f9f9;
+    border-radius: 8px;
+    padding: 12px;
+    border-left: 3px solid #1a73e8;
+}
+
+.post-author {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 8px;
+}
+
+.post-avatar {
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    background: #ddd;
+    object-fit: cover;
+}
+
+.post-author-info {
+    flex: 1;
+    min-width: 0;
+}
+
+.post-author-name {
+    font-weight: 600;
+    color: #333;
+    font-size: 0.9em;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.post-author-handle {
+    color: #999;
+    font-size: 0.8em;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.post-date {
+    color: #999;
+    font-size: 0.8em;
+    white-space: nowrap;
+}
+
+.post-content {
+    color: #555;
+    line-height: 1.5;
+    font-size: 0.9em;
+    word-wrap: break-word;
+}
+
 /* Avatar Stack Styles */
 .avatar-stack {
     display: flex;
