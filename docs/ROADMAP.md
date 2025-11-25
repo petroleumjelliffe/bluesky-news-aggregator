@@ -4,6 +4,7 @@
 
 ## Completed
 
+### Core Features
 - [x] Core aggregator with firehose integration
 - [x] Trending links API with share counts
 - [x] Link metadata fetching (title, description, OG image)
@@ -12,6 +13,15 @@
 - [x] Template-based frontend
 - [x] GitHub Pages deployment (gh-pages branch)
 - [x] Render deployment (API + firehose + cron)
+
+### Network Discovery (v2.0.0)
+- [x] 2nd-degree network crawling (friends-of-friends)
+- [x] Degree-based filtering (1st, 2nd, or global views)
+- [x] Source count filtering (e.g., followed by 2+ friends)
+- [x] Profile metadata fetching (handles, avatars, display names)
+- [x] Network management CLI tools
+- [x] API endpoints with `?degree=` parameter
+- [x] 49,831 accounts monitored (343 1st-degree + 49,488 2nd-degree)
 
 ---
 
@@ -36,21 +46,22 @@
 
 ---
 
-### 2. Expanded Network Reach
+### 2. Content Moderation & Filtering
 
-**Goal**: Surface trending content beyond immediate follows.
+**Goal**: Improve content quality and safety.
 
 | Feature | Description | Complexity |
 |---------|-------------|------------|
-| 2nd-degree network | Friends-of-friends (who your follows follow) | High |
-| Global view | Trending across all of Bluesky | Medium |
-| Spam/adult filtering | Integrate Bluesky labeler/tagger for content moderation | Medium |
+| Spam/bot filtering | Detect and filter spam accounts and bot content | Medium |
+| Adult content filtering | Integrate Bluesky labeler for NSFW content | Medium |
+| Domain blocklist | Allow filtering/hiding certain domains | Low |
+| Label-based filtering | Use Bluesky's labeling system for moderation | Medium |
 
 **Technical Notes**:
-- 2nd-degree: Crawl follows of follows, store relationship depth
-- Global: Remove follows filter, add caching layer (expensive query)
-- Filtering: Use `com.atproto.label.queryLabels` or subscribe to labeler firehose
-- Consider: Ozone labeler integration for moderation
+- Spam detection: Track posting frequency, repetitive content patterns
+- Labeler integration: Subscribe to labeler firehose or query `com.atproto.label.queryLabels`
+- Ozone integration: Consider Ozone moderation service for automated filtering
+- Domain blocklist: Simple table with blocked domains, check during link processing
 
 ---
 
@@ -71,7 +82,26 @@
 
 ---
 
-### 4. Syndication
+### 4. Performance & Scalability
+
+**Goal**: Optimize for growing network size and user base.
+
+| Feature | Description | Complexity |
+|---------|-------------|------------|
+| Redis caching | Cache trending queries, reduce DB load | Medium |
+| Materialized views | Pre-compute trending rankings | Low |
+| Query optimization | Add indexes, optimize slow queries | Low |
+| Connection pooling | Tune database connection pool settings | Low |
+
+**Technical Notes**:
+- Redis: Cache trending results with TTL, invalidate on new posts
+- Materialized views: Refresh every N minutes for fast trending queries
+- Indexes: Add composite indexes on (created_at, author_degree) for filtering
+- Monitoring: Track query performance, identify bottlenecks
+
+---
+
+### 5. Syndication
 
 **Goal**: Deliver trending links outside the web app.
 
@@ -90,20 +120,31 @@
 
 ## Priority Order
 
-1. **Frontend Improvements** - Quick wins, improves existing UX
-2. **Multi-User Support** - Enables broader adoption
-3. **Expanded Network** - More content discovery options
-4. **Syndication** - Passive consumption options
+1. **Frontend Improvements** - Quick wins, improves existing UX for 2nd-degree content
+2. **Content Moderation** - Essential for quality as network grows to 49k+ accounts
+3. **Performance & Scalability** - Optimize queries for large dataset (160k+ posts)
+4. **Multi-User Support** - Enables broader adoption
+5. **Syndication** - Passive consumption options
 
 ---
 
 ## Technical Debt / Infrastructure
 
-- [ ] Add Redis caching for expensive queries
-- [ ] Monitoring/alerting (uptime, error rates)
+**High Priority:**
+- [ ] Add indexes for degree-filtered queries (created_at + author_degree)
+- [ ] Monitoring/alerting (uptime, error rates, firehose lag)
+- [ ] Query performance profiling with 160k+ posts
+
+**Medium Priority:**
+- [ ] Redis caching for trending queries
 - [ ] Rate limiting per user (not just IP)
 - [ ] Database connection pooling tuning
 - [ ] Automated backups for Render Postgres
+
+**Nice to Have:**
+- [ ] Prometheus metrics export
+- [ ] Grafana dashboards
+- [ ] Log aggregation (structured logging)
 
 ---
 
