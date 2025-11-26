@@ -40,10 +40,9 @@ vendor/
 # Logs
 *.log
 
-# AI 
-.claude/logs/*.log
+# AI
+.claude/logs/
 logs/
-.claude/
 
 
 
