@@ -161,7 +161,7 @@ func (db *DB) GetTrendingLinks(hoursBack int, limit int) ([]TrendingLink, error)
 			l.title,
 			l.description,
 			l.og_image_url,
-			COUNT(DISTINCT pl.post_id) as share_count,
+			COUNT(DISTINCT p.author_did) as share_count,
 			MAX(p.created_at) as last_shared_at,
 			ARRAY_AGG(DISTINCT COALESCE(n.handle, p.author_handle)) as sharers
 		FROM links l
@@ -190,7 +190,7 @@ func (db *DB) GetTrendingLinksByDegree(hoursBack int, limit int, degree int) ([]
 			l.title,
 			l.description,
 			l.og_image_url,
-			COUNT(DISTINCT pl.post_id) as share_count,
+			COUNT(DISTINCT p.author_did) as share_count,
 			MAX(p.created_at) as last_shared_at,
 			ARRAY_AGG(DISTINCT COALESCE(n.handle, p.author_handle)) as sharers
 		FROM links l
