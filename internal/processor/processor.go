@@ -122,6 +122,12 @@ func (p *Processor) ProcessEvent(event *models.Event) error {
 		return fmt.Errorf("failed to insert post: %w", err)
 	}
 
+	// Skip reaction GIFs (image/video posts without actual links)
+	if p.isReactionGIF(&postRecord) {
+		log.Printf("[SKIP] Reaction GIF detected, skipping URL extraction: %s", event.Did)
+		return nil
+	}
+
 	// Process URLs
 	urlCount := 0
 
@@ -143,6 +149,49 @@ func (p *Processor) ProcessEvent(event *models.Event) error {
 	}
 
 	return nil
+}
+
+// isReactionGIF checks if a post is a reaction GIF/image/video without actual links
+// Returns true if:
+// - Post has an image or video embed
+// - Post has no external link embed
+// - Post has no URLs in text
+// - Post has no quote post
+func (p *Processor) isReactionGIF(post *PostRecord) bool {
+	// No embed means it's not a reaction GIF
+	if post.Embed == nil {
+		return false
+	}
+
+	// Check if it's an image or video embed type
+	embedType := post.Embed.Type
+	isMediaEmbed := embedType == "app.bsky.embed.images" ||
+	                embedType == "app.bsky.embed.video" ||
+	                embedType == "app.bsky.embed.images#view" ||
+	                embedType == "app.bsky.embed.video#view"
+
+	if !isMediaEmbed {
+		return false
+	}
+
+	// If it has an external link, it's not just a reaction GIF
+	if post.Embed.External != nil {
+		return false
+	}
+
+	// If it has a quote post, it's not just a reaction GIF
+	if post.Embed.Record != nil {
+		return false
+	}
+
+	// If the post text contains URLs, it's not just a reaction GIF
+	urls := urlutil.ExtractURLs(post.Text)
+	if len(urls) > 0 {
+		return false
+	}
+
+	// It's a pure image/video post without links - reaction GIF!
+	return true
 }
 
 // processURLs processes a list of URLs and links them to a post
