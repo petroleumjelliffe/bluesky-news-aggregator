@@ -65,6 +65,18 @@ func (c *Classifier) ClassifyLinks(linkIDs []int, verbose bool) (*Classification
 			log.Printf("[%d/%d] Processing link ID %d...", i+1, len(linkIDs), linkID)
 		}
 
+		// Skip if already classified into a story
+		var exists bool
+		err := c.db.QueryRow(`
+			SELECT EXISTS(SELECT 1 FROM story_articles WHERE link_id = $1)
+		`, linkID).Scan(&exists)
+		if err == nil && exists {
+			if verbose {
+				log.Printf("  ⏭ Already classified, skipping")
+			}
+			continue
+		}
+
 		article, err := c.processLink(linkID, verbose)
 		if err != nil {
 			if verbose {
@@ -85,7 +97,12 @@ func (c *Classifier) ClassifyLinks(linkIDs []int, verbose bool) (*Classification
 	}
 
 	if len(articles) == 0 {
-		return result, fmt.Errorf("no articles could be processed")
+		if verbose {
+			log.Println("\nAll links already classified or could not be processed")
+		}
+		result.CompletedAt = time.Now()
+		result.Duration = result.CompletedAt.Sub(result.StartedAt)
+		return result, nil
 	}
 
 	if verbose {
