@@ -111,6 +111,7 @@ func (s *Server) setupRoutes() {
 	// Routes
 	s.router.Get("/", s.handleRoot)
 	s.router.Get("/api/trending", s.handleTrending)
+	s.router.Get("/api/links/{id}/posts", s.handleLinkPosts)
 	s.router.Get("/health", s.handleHealth)
 }
 
@@ -206,6 +207,31 @@ func (s *Server) handleTrending(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+func (s *Server) handleLinkPosts(w http.ResponseWriter, r *http.Request) {
+	// Get link ID from URL parameter
+	linkIDStr := chi.URLParam(r, "id")
+	linkID, err := strconv.Atoi(linkIDStr)
+	if err != nil {
+		http.Error(w, "Invalid link ID", http.StatusBadRequest)
+		return
+	}
+
+	// Get posts for this link
+	posts, err := s.db.GetLinkPosts(linkID)
+	if err != nil {
+		log.Printf("Error getting link posts: %v", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	// Return posts as JSON
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"link_id": linkID,
+		"posts":   posts,
+	})
 }
 
 // securityHeadersMiddleware adds security headers to all responses

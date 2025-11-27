@@ -28,7 +28,6 @@ function renderAvatarStack(sharers, maxVisible = 5) {
             alt="${displayName}"
             title="${displayName} (@${sharer.handle})"
             class="avatar"
-            onerror="this.src='/static/img/default-avatar.svg'"
         />`;
   });
 
@@ -102,12 +101,10 @@ function loadTrending() {
                             } share${link.share_count !== 1 ? "s" : ""}</span>
                         </div>
                         ${renderAvatarStack(link.sharer_avatars)}
-                        <button class="posts-toggle" onclick="togglePosts(this, ${
+                        <button class="posts-toggle" data-link-id="${
                           link.id
-                        })">Show Posts ▼</button>
-                        <div class="posts-container" id="posts-${link.id}">
-                            <div class="loading">Posts will be loaded here in Phase 3...</div>
-                        </div>
+                        }">Show Posts ▼</button>
+                        <div class="posts-container" id="posts-${link.id}"></div>
                     </div>
                 `;
 
@@ -128,13 +125,110 @@ function togglePosts(button, linkId) {
   } else {
     container.classList.add("expanded");
     button.textContent = "Hide Posts ▲";
+
+    // Load posts if not already loaded
+    if (!container.dataset.loaded) {
+      loadPosts(linkId, container);
+    }
   }
 }
 
-// Load on page load
-loadTrending();
+function loadPosts(linkId, container) {
+  container.innerHTML = '<div class="loading">Loading posts...</div>';
 
-// Allow Enter key to refresh
-document.addEventListener("keypress", (e) => {
-  if (e.key === "Enter") loadTrending();
+  fetch(`/api/links/${linkId}/posts`)
+    .then((res) => {
+      if (!res.ok) throw new Error("Failed to fetch posts");
+      return res.json();
+    })
+    .then((data) => {
+      container.dataset.loaded = "true";
+      renderPosts(data.posts, container);
+    })
+    .catch((err) => {
+      container.innerHTML = `<div class="error">Error loading posts: ${err.message}</div>`;
+    });
+}
+
+function renderPosts(posts, container) {
+  if (!posts || posts.length === 0) {
+    container.innerHTML = '<div class="loading">No posts found for this link.</div>';
+    return;
+  }
+
+  let html = '<div class="posts-list">';
+  posts.forEach((post) => {
+    const displayName = post.display_name || post.handle;
+    const avatarUrl = post.avatar_url || "/static/img/default-avatar.svg";
+    const postDate = new Date(post.created_at).toLocaleDateString("en-US", {
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+    });
+
+    // Extract rkey from post ID (format: at://did/app.bsky.feed.post/rkey)
+    const rkey = post.id.split('/').pop();
+    const postUrl = `https://bsky.app/profile/${post.handle}/post/${rkey}`;
+    const profileUrl = `https://bsky.app/profile/${post.handle}`;
+
+    html += `
+      <div class="post-item">
+        <div class="post-author">
+          <img
+            src="${avatarUrl}"
+            alt="${displayName}"
+            class="post-avatar"
+          />
+          <div class="post-author-info">
+            <a href="${profileUrl}" target="_blank" rel="noopener noreferrer" class="post-author-name">${displayName}</a>
+            <a href="${profileUrl}" target="_blank" rel="noopener noreferrer" class="post-author-handle">@${post.handle}</a>
+          </div>
+          <a href="${postUrl}" target="_blank" rel="noopener noreferrer" class="post-date">${postDate}</a>
+        </div>
+        <div class="post-content">${escapeHtml(post.content)}</div>
+      </div>
+    `;
+  });
+  html += "</div>";
+
+  container.innerHTML = html;
+}
+
+function escapeHtml(text) {
+  const div = document.createElement("div");
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+// Initialize when DOM is ready
+document.addEventListener("DOMContentLoaded", () => {
+  // Load trending links on page load
+  loadTrending();
+
+  // Refresh button click handler
+  document.getElementById("refresh-btn").addEventListener("click", loadTrending);
+
+  // Allow Enter key to refresh
+  document.addEventListener("keypress", (e) => {
+    if (e.key === "Enter") loadTrending();
+  });
+
+  // Event delegation for post toggle buttons
+  document.addEventListener("click", (e) => {
+    if (e.target.classList.contains("posts-toggle")) {
+      const linkId = e.target.dataset.linkId;
+      togglePosts(e.target, linkId);
+    }
+  });
+
+  // Event delegation for image error handling (avatar fallbacks)
+  document.addEventListener(
+    "error",
+    (e) => {
+      if (e.target.tagName === "IMG" && (e.target.classList.contains("avatar") || e.target.classList.contains("post-avatar"))) {
+        e.target.src = "/static/img/default-avatar.svg";
+      }
+    },
+    true
+  );
 });

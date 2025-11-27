@@ -76,6 +76,17 @@ type SharerAvatar struct {
 	DID         string  `db:"did" json:"did"`
 }
 
+// LinkPost represents a post that shared a specific link
+type LinkPost struct {
+	ID          string    `db:"id" json:"id"`
+	Content     string    `db:"content" json:"content"`
+	CreatedAt   time.Time `db:"created_at" json:"created_at"`
+	Handle      string    `db:"handle" json:"handle"`
+	DisplayName *string   `db:"display_name" json:"display_name"`
+	AvatarURL   *string   `db:"avatar_url" json:"avatar_url"`
+	DID         string    `db:"did" json:"did"`
+}
+
 // NewDB creates a new database connection
 func NewDB(connectionString string) (*DB, error) {
 	db, err := sqlx.Connect("postgres", connectionString)
@@ -332,6 +343,33 @@ func (db *DB) GetLinkSharers(linkID int) ([]SharerAvatar, error) {
 	var sharers []SharerAvatar
 	err := db.Select(&sharers, query, linkID)
 	return sharers, err
+}
+
+// GetLinkPosts retrieves all posts that shared a specific link
+// Filters out reposts (posts with no meaningful content)
+func (db *DB) GetLinkPosts(linkID int) ([]LinkPost, error) {
+	query := `
+		SELECT
+			p.id,
+			p.content,
+			p.created_at,
+			COALESCE(n.handle, p.author_handle) as handle,
+			n.display_name,
+			n.avatar_url,
+			COALESCE(n.did, p.author_handle) as did
+		FROM post_links pl
+		JOIN posts p ON pl.post_id = p.id
+		LEFT JOIN network_accounts n ON p.author_did = n.did
+		WHERE pl.link_id = $1
+		  AND p.content != ''  -- Exclude empty posts (reposts)
+		  AND LENGTH(p.content) > 10  -- Exclude very short posts (likely just URL)
+		ORDER BY p.created_at DESC
+		LIMIT 50  -- Limit to most recent 50 posts
+	`
+
+	var posts []LinkPost
+	err := db.Select(&posts, query, linkID)
+	return posts, err
 }
 
 // DeleteOldPosts deletes posts older than the given cutoff time
