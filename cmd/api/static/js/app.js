@@ -166,6 +166,11 @@ function renderPosts(posts, container) {
       year: "numeric",
     });
 
+    // Extract rkey from post ID (format: at://did/app.bsky.feed.post/rkey)
+    const rkey = post.id.split('/').pop();
+    const postUrl = `https://bsky.app/profile/${post.handle}/post/${rkey}`;
+    const profileUrl = `https://bsky.app/profile/${post.handle}`;
+
     html += `
       <div class="post-item">
         <div class="post-author">
@@ -175,10 +180,10 @@ function renderPosts(posts, container) {
             class="post-avatar"
           />
           <div class="post-author-info">
-            <div class="post-author-name">${displayName}</div>
-            <div class="post-author-handle">@${post.handle}</div>
+            <a href="${profileUrl}" target="_blank" rel="noopener noreferrer" class="post-author-name">${displayName}</a>
+            <a href="${profileUrl}" target="_blank" rel="noopener noreferrer" class="post-author-handle">@${post.handle}</a>
           </div>
-          <div class="post-date">${postDate}</div>
+          <a href="${postUrl}" target="_blank" rel="noopener noreferrer" class="post-date">${postDate}</a>
         </div>
         <div class="post-content">${escapeHtml(post.content)}</div>
       </div>

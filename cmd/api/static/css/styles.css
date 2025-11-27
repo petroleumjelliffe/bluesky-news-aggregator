@@ -250,6 +250,13 @@ button:active {
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+    text-decoration: none;
+    display: block;
+}
+
+.post-author-name:hover {
+    color: #1a73e8;
+    text-decoration: underline;
 }
 
 .post-author-handle {
@@ -258,12 +265,25 @@ button:active {
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+    text-decoration: none;
+    display: block;
+}
+
+.post-author-handle:hover {
+    color: #1a73e8;
+    text-decoration: underline;
 }
 
 .post-date {
     color: #999;
     font-size: 0.8em;
     white-space: nowrap;
+    text-decoration: none;
+}
+
+.post-date:hover {
+    color: #1a73e8;
+    text-decoration: underline;
 }
 
 .post-content {
