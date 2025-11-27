@@ -4,11 +4,18 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jmoiron/sqlx"
 	"github.com/lib/pq"
 )
+
+// Blocked domains for reaction GIFs and direct image links
+var blockedDomains = []string{
+	"tenor.com",
+	"giphy.com",
+}
 
 // DB wraps the database connection
 type DB struct {
@@ -162,9 +169,19 @@ func (db *DB) LinkPostToLink(postID string, linkID int) error {
 	return err
 }
 
+// buildDomainFilter generates SQL conditions to filter out blocked domains
+func buildDomainFilter() string {
+	var conditions []string
+	for _, domain := range blockedDomains {
+		conditions = append(conditions, fmt.Sprintf("l.normalized_url NOT ILIKE '%%%s%%'", domain))
+	}
+	return strings.Join(conditions, " AND ")
+}
+
 // GetTrendingLinks retrieves the most-shared links within a time window
 func (db *DB) GetTrendingLinks(hoursBack int, limit int) ([]TrendingLink, error) {
-	query := `
+	domainFilter := buildDomainFilter()
+	query := fmt.Sprintf(`
 		SELECT
 			l.id,
 			l.normalized_url,
@@ -180,10 +197,12 @@ func (db *DB) GetTrendingLinks(hoursBack int, limit int) ([]TrendingLink, error)
 		JOIN posts p ON pl.post_id = p.id
 		LEFT JOIN network_accounts n ON p.author_did = n.did
 		WHERE p.created_at > NOW() - INTERVAL '1 hour' * $1
+		  AND l.normalized_url !~* '\.(gif|jpe?g|png|webp)(\?.*)?$'
+		  AND %s
 		GROUP BY l.id
 		ORDER BY share_count DESC, last_shared_at DESC
 		LIMIT $2
-	`
+	`, domainFilter)
 
 	var links []TrendingLink
 	err := db.Select(&links, query, hoursBack, limit)
@@ -193,7 +212,8 @@ func (db *DB) GetTrendingLinks(hoursBack int, limit int) ([]TrendingLink, error)
 // GetTrendingLinksByDegree retrieves trending links filtered by network degree
 // degree: 0 = all posts, 1 = 1st-degree only, 2 = 2nd-degree only
 func (db *DB) GetTrendingLinksByDegree(hoursBack int, limit int, degree int) ([]TrendingLink, error) {
-	query := `
+	domainFilter := buildDomainFilter()
+	query := fmt.Sprintf(`
 		SELECT
 			l.id,
 			l.normalized_url,
@@ -210,10 +230,12 @@ func (db *DB) GetTrendingLinksByDegree(hoursBack int, limit int, degree int) ([]
 		LEFT JOIN network_accounts n ON p.author_did = n.did
 		WHERE p.created_at > NOW() - INTERVAL '1 hour' * $1
 		  AND ($3 = 0 OR p.author_degree = $3)
+		  AND l.normalized_url !~* '\.(gif|jpe?g|png|webp)(\?.*)?$'
+		  AND %s
 		GROUP BY l.id
 		ORDER BY share_count DESC, last_shared_at DESC
 		LIMIT $2
-	`
+	`, domainFilter)
 
 	var links []TrendingLink
 	err := db.Select(&links, query, hoursBack, limit, degree)
