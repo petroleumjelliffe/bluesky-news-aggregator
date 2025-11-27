@@ -79,6 +79,9 @@ func (c *Classifier) ClassifyLinks(linkIDs []int, verbose bool) (*Classification
 		if verbose {
 			log.Printf("  ✓ Processed: %s", truncate(article.Title, 60))
 		}
+
+		// Small delay to avoid overwhelming Ollama with concurrent requests
+		time.Sleep(500 * time.Millisecond)
 	}
 
 	if len(articles) == 0 {

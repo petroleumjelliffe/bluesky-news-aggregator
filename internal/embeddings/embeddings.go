@@ -145,7 +145,7 @@ func (p *OllamaProvider) Dimensions() int {
 	return p.dimensions
 }
 
-// GenerateEmbedding generates an embedding vector using Ollama
+// GenerateEmbedding generates an embedding vector using Ollama with automatic retries
 func (p *OllamaProvider) GenerateEmbedding(text string) ([]float32, error) {
 	// Ollama handles long texts better, but still truncate if extremely long
 	if len(text) > 50000 {
@@ -162,38 +162,60 @@ func (p *OllamaProvider) GenerateEmbedding(text string) ([]float32, error) {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	url := fmt.Sprintf("%s/api/embeddings", p.baseURL)
-	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
+	// Retry logic for transient Ollama errors
+	maxRetries := 3
+	var lastErr error
+
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		if attempt > 0 {
+			// Exponential backoff: 500ms, 1s, 2s
+			sleepDuration := time.Duration(500*(1<<uint(attempt-1))) * time.Millisecond
+			time.Sleep(sleepDuration)
+		}
+
+		url := fmt.Sprintf("%s/api/embeddings", p.baseURL)
+		req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
+		if err != nil {
+			return nil, fmt.Errorf("failed to create request: %w", err)
+		}
+
+		req.Header.Set("Content-Type", "application/json")
+
+		resp, err := p.httpClient.Do(req)
+		if err != nil {
+			lastErr = fmt.Errorf("request failed: %w", err)
+			continue
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			lastErr = fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(body))
+			// Retry on 500 errors (server errors), but not on 4xx (client errors)
+			if resp.StatusCode >= 500 {
+				continue
+			}
+			return nil, lastErr
+		}
+
+		var result struct {
+			Embedding []float32 `json:"embedding"`
+		}
+
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			lastErr = fmt.Errorf("failed to decode response: %w", err)
+			continue
+		}
+
+		if len(result.Embedding) == 0 {
+			lastErr = fmt.Errorf("no embedding returned")
+			continue
+		}
+
+		return result.Embedding, nil
 	}
 
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := p.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(body))
-	}
-
-	var result struct {
-		Embedding []float32 `json:"embedding"`
-	}
-
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, fmt.Errorf("failed to decode response: %w", err)
-	}
-
-	if len(result.Embedding) == 0 {
-		return nil, fmt.Errorf("no embedding returned")
-	}
-
-	return result.Embedding, nil
+	return nil, fmt.Errorf("failed after %d attempts: %w", maxRetries, lastErr)
 }
 
 // EmbeddingService manages article embedding generation
