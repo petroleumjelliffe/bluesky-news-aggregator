@@ -23,6 +23,9 @@ func main() {
 		verbose             = flag.Bool("verbose", true, "Enable verbose logging")
 		displayOnly         = flag.Bool("display-only", false, "Only display existing stories without running classification")
 		runMigration        = flag.Bool("migrate", false, "Run database migration before classifying")
+		providerType        = flag.String("provider", "ollama", "Embedding provider: 'ollama' or 'openai'")
+		ollamaModel         = flag.String("ollama-model", "nomic-embed-text", "Ollama model to use")
+		ollamaURL           = flag.String("ollama-url", "http://localhost:11434", "Ollama base URL")
 	)
 	flag.Parse()
 
@@ -32,12 +35,6 @@ func main() {
 	cfg, err := config.Load()
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
-	}
-
-	// Check for OpenAI API key
-	apiKey := os.Getenv("OPENAI_API_KEY")
-	if apiKey == "" && !*displayOnly {
-		log.Fatal("OPENAI_API_KEY environment variable is required")
 	}
 
 	// Connect to database
@@ -61,8 +58,23 @@ func main() {
 		return
 	}
 
-	// Initialize embedding service
-	provider := embeddings.NewOpenAIProvider(apiKey, "text-embedding-3-small")
+	// Initialize embedding provider based on flag
+	var provider embeddings.Provider
+	switch *providerType {
+	case "ollama":
+		log.Printf("Using Ollama provider (model: %s, url: %s)\n", *ollamaModel, *ollamaURL)
+		provider = embeddings.NewOllamaProvider(*ollamaModel, *ollamaURL)
+	case "openai":
+		apiKey := os.Getenv("OPENAI_API_KEY")
+		if apiKey == "" {
+			log.Fatal("OPENAI_API_KEY environment variable is required for OpenAI provider")
+		}
+		log.Println("Using OpenAI provider (model: text-embedding-3-small)")
+		provider = embeddings.NewOpenAIProvider(apiKey, "text-embedding-3-small")
+	default:
+		log.Fatalf("Unknown provider: %s (use 'ollama' or 'openai')", *providerType)
+	}
+
 	embeddingService := embeddings.NewEmbeddingService(provider)
 
 	// Initialize classifier
@@ -108,15 +120,27 @@ func main() {
 
 // connectDB establishes database connection
 func connectDB(cfg *config.Config) (*sql.DB, error) {
-	connStr := fmt.Sprintf(
-		"host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
-		cfg.Database.Host,
-		cfg.Database.Port,
-		cfg.Database.User,
-		cfg.Database.Password,
-		cfg.Database.DBName,
-		cfg.Database.SSLMode,
-	)
+	var connStr string
+	if cfg.Database.Password == "" {
+		connStr = fmt.Sprintf(
+			"host=%s port=%d user=%s dbname=%s sslmode=%s",
+			cfg.Database.Host,
+			cfg.Database.Port,
+			cfg.Database.User,
+			cfg.Database.DBName,
+			cfg.Database.SSLMode,
+		)
+	} else {
+		connStr = fmt.Sprintf(
+			"host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
+			cfg.Database.Host,
+			cfg.Database.Port,
+			cfg.Database.User,
+			cfg.Database.Password,
+			cfg.Database.DBName,
+			cfg.Database.SSLMode,
+		)
+	}
 
 	db, err := sql.Open("postgres", connStr)
 	if err != nil {

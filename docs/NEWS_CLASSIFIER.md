@@ -73,61 +73,69 @@ Tracks classification runs and parameters.
 
 The classifier requires:
 - PostgreSQL database (already configured)
-- OpenAI API key for embeddings
+- Embedding provider: **Ollama (recommended)** or OpenAI
+
+#### Option A: Ollama (Local, Free) - Recommended
 
 ```bash
-# Dependencies are already in go.mod
-go mod download
+# Install Ollama
+brew install ollama  # macOS
+# or download from https://ollama.ai
+
+# Start Ollama service
+ollama serve
+
+# Pull embedding model (768 dimensions)
+ollama pull nomic-embed-text
+
+# Alternative: larger model (1024 dimensions)
+ollama pull mxbai-embed-large
 ```
 
-### 2. Set Environment Variables
-
-Create a `.env` file or export:
+#### Option B: OpenAI (Cloud, Paid)
 
 ```bash
-# Required
+# Set API key
 export OPENAI_API_KEY="sk-..."
-
-# Database (if not already configured)
-export DB_HOST=localhost
-export DB_PORT=5432
-export DB_USER=postgres
-export DB_PASSWORD=your-password
-export DB_NAME=bluesky_news
-export DB_SSLMODE=disable
 ```
 
-### 3. Run Database Migration
+### 2. Run Database Migration
 
 ```bash
-# Run migration automatically
-go run ./cmd/classify -migrate
-
-# Or run manually
-psql $DATABASE_URL -f migrations/006_embeddings_and_stories.sql
+# First time only: create embedding tables
+./bin/classify -migrate
 ```
 
 ## Usage
 
-### Basic Classification
-
-Classify the 20 most recent links with at least 2 shares:
+### Basic Classification with Ollama (Default)
 
 ```bash
-go run ./cmd/classify
+# Classify the 20 most recent links
+./bin/classify
+
+# Use a different Ollama model
+./bin/classify -ollama-model mxbai-embed-large
+```
+
+### Using OpenAI Instead
+
+```bash
+# Requires OPENAI_API_KEY environment variable
+./bin/classify -provider openai
 ```
 
 ### Custom Parameters
 
 ```bash
 # Classify 50 links with similarity threshold 0.85
-go run ./cmd/classify -limit 50 -threshold 0.85
+./bin/classify -limit 50 -threshold 0.85
 
 # Only include links with 5+ shares
-go run ./cmd/classify -limit 30 -min-shares 5 -threshold 0.80
+./bin/classify -limit 30 -min-shares 5 -threshold 0.80
 
 # Quiet mode (less verbose)
-go run ./cmd/classify -verbose=false
+./bin/classify -verbose=false
 ```
 
 ### Display Existing Stories
@@ -135,13 +143,16 @@ go run ./cmd/classify -verbose=false
 View stories without running classification:
 
 ```bash
-go run ./cmd/classify -display-only
+./bin/classify -display-only
 ```
 
 ## Command-Line Flags
 
 | Flag | Default | Description |
 |------|---------|-------------|
+| `-provider` | ollama | Embedding provider: 'ollama' or 'openai' |
+| `-ollama-model` | nomic-embed-text | Ollama model (nomic-embed-text, mxbai-embed-large) |
+| `-ollama-url` | http://localhost:11434 | Ollama base URL |
 | `-limit` | 20 | Number of recent links to classify |
 | `-threshold` | 0.80 | Similarity threshold (0-1) for grouping |
 | `-min-shares` | 2 | Minimum shares required for a link |

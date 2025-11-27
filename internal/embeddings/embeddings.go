@@ -103,6 +103,99 @@ func (p *OpenAIProvider) GenerateEmbedding(text string) ([]float32, error) {
 	return result.Data[0].Embedding, nil
 }
 
+// OllamaProvider implements embedding generation using local Ollama
+type OllamaProvider struct {
+	httpClient *http.Client
+	model      string
+	baseURL    string
+	dimensions int
+}
+
+// NewOllamaProvider creates a new Ollama embedding provider
+func NewOllamaProvider(model string, baseURL string) *OllamaProvider {
+	if model == "" {
+		model = "nomic-embed-text" // Default model
+	}
+
+	if baseURL == "" {
+		baseURL = "http://localhost:11434" // Default Ollama URL
+	}
+
+	// Set dimensions based on model
+	dims := 768 // nomic-embed-text dimensions
+	switch model {
+	case "mxbai-embed-large":
+		dims = 1024
+	case "all-minilm":
+		dims = 384
+	}
+
+	return &OllamaProvider{
+		model:   model,
+		baseURL: baseURL,
+		httpClient: &http.Client{
+			Timeout: 120 * time.Second, // Longer timeout for local inference
+		},
+		dimensions: dims,
+	}
+}
+
+// Dimensions returns the embedding dimension size
+func (p *OllamaProvider) Dimensions() int {
+	return p.dimensions
+}
+
+// GenerateEmbedding generates an embedding vector using Ollama
+func (p *OllamaProvider) GenerateEmbedding(text string) ([]float32, error) {
+	// Ollama handles long texts better, but still truncate if extremely long
+	if len(text) > 50000 {
+		text = text[:50000]
+	}
+
+	reqBody := map[string]interface{}{
+		"model":  p.model,
+		"prompt": text,
+	}
+
+	jsonData, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	url := fmt.Sprintf("%s/api/embeddings", p.baseURL)
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := p.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(body))
+	}
+
+	var result struct {
+		Embedding []float32 `json:"embedding"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	if len(result.Embedding) == 0 {
+		return nil, fmt.Errorf("no embedding returned")
+	}
+
+	return result.Embedding, nil
+}
+
 // EmbeddingService manages article embedding generation
 type EmbeddingService struct {
 	provider Provider
