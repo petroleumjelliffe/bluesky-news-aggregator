@@ -160,6 +160,9 @@ func fetchRecentLinks(db *sql.DB, limit, minShares int) ([]int, error) {
 		SELECT l.id
 		FROM links l
 		JOIN post_links pl ON l.id = pl.link_id
+		WHERE l.normalized_url !~* '\.(gif|jpe?g|png|webp)(\?.*)?$'
+		  AND l.normalized_url NOT ILIKE '%tenor.com%'
+		  AND l.normalized_url NOT ILIKE '%giphy.com%'
 		GROUP BY l.id
 		HAVING COUNT(pl.post_id) >= $1
 		ORDER BY MAX(l.first_seen_at) DESC
